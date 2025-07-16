@@ -373,86 +373,18 @@ async def generate_search_variations(
     variations["default"].append(raw_search_string)
     all_variations.add(search_string)
     logger.debug(f"Added default variation: '{raw_search_string}'")
-
-    matched_rule = None
+    
     if brand:
-        for rule in brand_rules_data.get("brand_rules", []):
-            if rule.get("is_active", False) and clean_string(rule.get("full_name", "")).lower() == brand:
-                matched_rule = rule
-                break
-
-    delimiters = [' ', '-', '_']
-    if matched_rule:
-        sku_format = matched_rule.get("sku_format", {})
-        base_format = sku_format.get("base", {})
-        article_lengths = base_format.get("article", ["8"])
-        model_lengths = base_format.get("model", ["7"])
-        color_lengths = sku_format.get("color_extension", ["0"])
-        
-        article_length = int(article_lengths[0]) if article_lengths else 8
-        model_length = int(model_lengths[0]) if model_lengths else 7
-        color_length = int(color_lengths[0]) if color_lengths else 0
-        
-        expected_lengths = matched_rule.get("expected_length", {})
-        with_color_lengths = expected_lengths.get("with_color", [])
-        
-        base = model if model else search_string
-        color_part = color if color else ""
-
-        if not color_part and with_color_lengths and len(search_string) == int(with_color_lengths[0]):
-            base = search_string[:-color_length]
-            color_part = search_string[-color_length:]
-            logger.debug(f"Assumed color: '{color_part}', base: '{base}'")
-
-        no_color_var = base[:article_length + model_length]
-        if no_color_var not in all_variations:
-            variations["no_color"].append(no_color_var)
-            all_variations.add(no_color_var)
-        logger.debug(f"Added no_color variation: '{no_color_var}'")
-
-        if color_part:
-            for delim in delimiters:
-                delim_var = f"{base}{delim}{color_part}"
-                if delim_var not in all_variations:
-                    variations["delimiter_variations"].append(delim_var)
-                    all_variations.add(delim_var)
-            logger.debug(f"Generated delimiter variations: {variations['delimiter_variations']}")
-
-        brand_alias_var = f"{matched_rule.get('full_name', brand).lower()} {search_string}"
+        logger.warning(f"No active rule found for brand '{brand}'. Generating a fallback brand+SKU variation.")
+        # Create a "brand + sku" variation as a fallback
+        brand_alias_var = f"{brand.lower()} {raw_search_string.lower()}"
         if brand_alias_var not in all_variations:
             variations["brand_alias"].append(brand_alias_var)
-            all_variations.add(brand_alias_var)
-        logger.debug(f"Added brand_alias: '{brand_alias_var}'")
-
-        article = base[:article_length]
-        model_part = base[article_length:article_length + model_length]
-        for delim1 in delimiters:
-            base_alias = f"{article}{delim1}{model_part}"
-            if base_alias not in all_variations:
-                variations["model_alias"].append(base_alias)
-                all_variations.add(base_alias)
-            if color_part:
-                for delim2 in delimiters:
-                    full_alias = f"{base_alias}{delim2}{color_part}"
-                    if full_alias not in all_variations:
-                        variations["model_alias"].append(full_alias)
-                        all_variations.add(full_alias)
-        logger.debug(f"Generated model_alias variations: {variations['model_alias']}")
-
+            all_variations.add(brand_alias_var.lower())
+            logger.debug(f"Added fallback brand_alias: '{brand_alias_var}'")
     else:
-        # Fallback if no specific rule is matched.
-        # Check if a brand was provided but just didn't have a rule.
-        if brand:
-            logger.warning(f"No active rule found for brand '{brand}'. Generating a fallback brand+SKU variation.")
-            # Create a "brand + sku" variation as a fallback
-            brand_alias_var = f"{brand.lower()} {raw_search_string.lower()}"
-            if brand_alias_var not in all_variations:
-                variations["brand_alias"].append(brand_alias_var)
-                all_variations.add(brand_alias_var.lower())
-                logger.debug(f"Added fallback brand_alias: '{brand_alias_var}'")
-        else:
-            # This is the case where no brand was identified at all.
-            logger.warning(f"No brand matched for SKU: {search_string}. Using fallback (default only).")
+        # This is the case where no brand was identified at all.
+        logger.warning(f"No brand matched for SKU: {search_string}. Using fallback (default only).")
 
     variations = {k: [item.upper() for item in v] for k, v in variations.items() if v}
     total_variations = sum(len(v) for v in variations.values())
