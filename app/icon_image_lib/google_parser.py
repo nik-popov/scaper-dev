@@ -180,10 +180,10 @@ def get_original_images(html_bytes, logger=None):
 
     min_length = min(len(main_image_urls), len(main_descriptions), len(main_source_urls), len(main_thumbs))
     # Truncate lists to the minimum common length to ensure DataFrame integrity
-    main_image_urls = main_image_urls[:min_length][:50]
-    main_descriptions = main_descriptions[:min_length][:50]
-    main_source_urls = main_source_urls[:min_length][:50]
-    main_thumbs = main_thumbs[:min_length][:50]
+    main_image_urls = main_image_urls[:min_length][:5]
+    main_descriptions = main_descriptions[:min_length][:5]
+    main_source_urls = main_source_urls[:min_length][:5]
+    main_thumbs = main_thumbs[:min_length][:5]
 
     logger.debug(f"GetOriginal: URLs={len(main_image_urls)}, Desc={len(main_descriptions)}, Sources={len(main_source_urls)}, Thumbs={len(main_thumbs)}")
     return main_image_urls, main_descriptions, main_source_urls, main_thumbs
