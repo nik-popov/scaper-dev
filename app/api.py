@@ -421,21 +421,15 @@ async def orchestrate_entry_search(
     brand_rules: Dict
 ) -> List[Dict]:
     logger.info(f"Orchestrating search for EntryID {entry_id} (FileID {file_id_context}). Term: '{original_search_term}', Brand: '{original_brand}'.")
-    processed_search_term, processed_brand, _, _ = await preprocess_sku(
-        search_string=original_search_term,
-        known_brand=original_brand,
-        brand_rules=brand_rules,
-        logger=logger
-    )
-    logger.debug(f"EntryID {entry_id}: Preprocessed to Term='{processed_search_term}', Brand='{processed_brand}'.")
+
     search_variations_map = await generate_search_variations(
-        search_string=processed_search_term,
-        brand=processed_brand,
+        search_string=original_search_term,
+        brand=original_brand,
         logger=logger
     )
     if not search_variations_map:
-        logger.warning(f"EntryID {entry_id}: No search variations for Term='{processed_search_term}', Brand='{processed_brand}'.")
-        return [_create_placeholder_result(entry_id, "no-search-variations", f"No variations for '{processed_search_term}'")]
+        logger.warning(f"EntryID {entry_id}: No search variations for Term='{original_search_term}', Brand='{original_brand}'.")
+        return [_create_placeholder_result(entry_id, "no-search-variations", f"No variations for '{original_search_term}'")]
 
     all_valid_results_collected: List[Dict] = []
     variation_type_priority = ["default"]
@@ -448,7 +442,7 @@ async def orchestrate_entry_search(
             for specific_search_term in terms_for_type:
                 logger.debug(f"EntryID {entry_id}: Searching term '{specific_search_term}' (type: {variation_type}).")
                 term_results = await search_client.search_single_term_all_regions(
-                    term=specific_search_term, brand=processed_brand, entry_id=entry_id
+                    term=specific_search_term, brand=original_brand, entry_id=entry_id
                 )
                 if term_results:
                     logger.info(f"EntryID {entry_id}: Found {len(term_results)} results for term '{specific_search_term}'.")
