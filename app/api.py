@@ -55,7 +55,7 @@ from search_utils import (update_search_sort_order, update_sort_no_image_entry,
                           update_sort_order)
 from url_extract import extract_thumbnail_url
 
-VERSION = "6.0.1" # Updated version
+VERSION = "7.0.0" # Updated version
 
 # --- Constants ---
 SCRAPER_RECORDS_TABLE_NAME = "utb_ImageScraperRecords"
