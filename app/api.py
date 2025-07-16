@@ -236,7 +236,7 @@ class SearchClient:
             }
         }
         self._aiohttp_session: Optional[aiohttp.ClientSession] = None
-        self.regions = ['northamerica-northeast', 'us-east', 'southamerica', 'us-central', 'us-west', 'europe', 'australia', 'asia', 'middle-east']
+        self.regions = ['northamerica-northeast', 'us-east', 'us-central', 'us-west', 'europe',]
         self._request_counter = 0  # For round-robin strategy
 
     async def _get_session(self) -> aiohttp.ClientSession:
@@ -438,7 +438,7 @@ async def orchestrate_entry_search(
         return [_create_placeholder_result(entry_id, "no-search-variations", f"No variations for '{processed_search_term}'")]
 
     all_valid_results_collected: List[Dict] = []
-    variation_type_priority = ["default", "brand_alias", "model_alias", "delimiter_variations", "color_variations", "no_color", "category_specific"]
+    variation_type_priority = ["default"]
     search_client = SearchClient(logger=logger)
     try:
         for variation_type in variation_type_priority:
@@ -809,8 +809,6 @@ async def process_restart_batch(
 
     brand_rules_data = await fetch_brand_rules(BRAND_RULES_URL, max_attempts=3, timeout=15, logger=logger)
     if not brand_rules_data: brand_rules_data = {} # Ensure it's a dict
-    if "Scotch & Soda" not in brand_rules_data: brand_rules_data["Scotch & Soda"] = {"aliases": ["Scotch and Soda", "S&S"], "sku_pattern": r"^\d{6,8}[a-zA-Z0-9]*$"}
-    logger.debug(f"FileID {file_id_for_db}: Using {len(brand_rules_data)} brand rules.")
 
     entries_to_process_list: List[Tuple] = []
     try:
@@ -1650,4 +1648,4 @@ async def api_validate_scraper_result_images(
     except ValueError: err_msg=f"Invalid FileID: {file_id}"; logger.error(f"[{job_run_id}] {err_msg}"); await upload_log_file(job_run_id, log_file_path, logger, db_record_file_id_to_update=file_id); raise HTTPException(status_code=400, detail=err_msg)
     except Exception as e_main: logger.critical(f"[{job_run_id}] Critical error validating images: {e_main}", exc_info=True); crit_log_url = await upload_log_file(job_run_id, log_file_path, logger, db_record_file_id_to_update=file_id); raise HTTPException(status_code=500, detail=f"Internal server error. Log: {crit_log_url}")
 
-app.include_router(router, prefix="/api/v6")
+app.include_router(router, prefix="/api/v7")
