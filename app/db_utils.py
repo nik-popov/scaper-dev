@@ -246,7 +246,7 @@ from rabbitmq_consumer import RabbitMQConsumer
 from database_config import conn_str, async_engine
 from typing import Any
 from common import clean_string, clean_url_string, validate_thumbnail_url
-
+from collections import defaultdict
 
 def flatten_entry_ids(entry_ids, logger, correlation_id):
     flat_ids = []
@@ -348,9 +348,21 @@ async def insert_search_results(
             logger.warning(f"[{correlation_id}] No valid EntryIDs after flattening")
             return False
 
+        # Group data by EntryID and assign SortOrder based on input order
+        data_by_entry = defaultdict(list)
+        for row in data:
+            data_by_entry[row["EntryID"]].append(row)
+
+        for entry_id, entry_data in data_by_entry.items():
+            for sort_order, row in enumerate(entry_data, start=1):
+                row["SortOrder"] = sort_order
+
+        # Flatten back to list
+        data = [row for entry_data in data_by_entry.values() for row in entry_data]
+
         insert_query = """
-            INSERT INTO utb_ImageScraperResult (EntryID, ImageUrl, ImageDesc, ImageSource, ImageUrlThumbnail, CreateTime)
-            VALUES (:EntryID, :ImageUrl, :ImageDesc, :ImageSource, :ImageUrlThumbnail, :CreateTime)
+            INSERT INTO utb_ImageScraperResult (EntryID, ImageUrl, ImageDesc, ImageSource, ImageUrlThumbnail, CreateTime, SortOrder)
+            VALUES (:EntryID, :ImageUrl, :ImageDesc, :ImageSource, :ImageUrlThumbnail, :CreateTime, :SortOrder)
         """
 
         batch_size = 100
@@ -640,20 +652,16 @@ async def update_initial_sort_order(file_id: str, logger: Optional[logging.Logge
             )
 
             if updates:
-                batch_size = 1000  # SQL Server limit for VALUES rows
-                for i in range(0, len(updates), batch_size):
-                    batch = updates[i:i + batch_size]
-                    values_clause = ", ".join(f"({result_id}, {sort_order})" for result_id, sort_order in batch)
-                    cursor.execute(
-                        f"""
-                        UPDATE utb_ImageScraperResult
-                        SET SortOrder = v.sort_order
-                        FROM (VALUES {values_clause}) AS v(result_id, sort_order)
-                        WHERE utb_ImageScraperResult.ResultID = v.result_id
-                        """
-                    )
-                    logger.debug(f"Updated batch {i//batch_size + 1} with {len(batch)} rows for FileID: {file_id}")
-                logger.info(f"Updated {len(updates)} rows in {len(updates)//batch_size + 1 if updates else 0} batches for FileID: {file_id}")
+                values_clause = ", ".join(f"({result_id}, {sort_order})" for result_id, sort_order in updates)
+                cursor.execute(
+                    f"""
+                    UPDATE utb_ImageScraperResult
+                    SET SortOrder = v.sort_order
+                    FROM (VALUES {values_clause}) AS v(result_id, sort_order)
+                    WHERE utb_ImageScraperResult.ResultID = v.result_id
+                    """
+                )
+                logger.info(f"Updated {len(updates)} rows for FileID: {file_id}")
 
             cursor.execute(
                 """

@@ -746,27 +746,35 @@ async def find_entries_missing_results(
     return entries_list
     
 async def process_restart_batch(
-    file_id_db_str: str, # This is the string representation of the DB FileID
+    file_id_db_str: str,  # This is the string representation of the DB FileID
     entry_id: Optional[int] = None,
     use_all_variations: bool = False,
     logger: logging.Logger = default_logger,
     background_tasks: Optional[BackgroundTasks] = None,
     num_workers: int = 4,
 ) -> Dict[str, Any]:
-    current_log_filename = "unknown_log_file.log" # Placeholder
-    if logger.handlers and hasattr(logger.handlers[0], 'baseFilename'):
+    current_log_filename = "unknown_log_file.log"  # Placeholder
+    if logger.handlers and hasattr(logger.handlers[0], "baseFilename"):
         current_log_filename = logger.handlers[0].baseFilename
     else:
         log_dir = "job_logs"
-        if not os.path.exists(log_dir): os.makedirs(log_dir, exist_ok=True)
-        current_log_filename = os.path.join(log_dir, f"job_{file_id_db_str}_process_restart.log")
+        if not os.path.exists(log_dir):
+            os.makedirs(log_dir, exist_ok=True)
+        current_log_filename = os.path.join(
+            log_dir, f"job_{file_id_db_str}_process_restart.log"
+        )
 
-    logger.info(f"Initiating 'process_restart_batch' for FileID: {file_id_db_str}. StartEntryID: {entry_id or 'Auto'}, UseAllVariations: {use_all_variations}, Workers: {num_workers}.")
+    logger.info(
+        f"Initiating 'process_restart_batch' for FileID: {file_id_db_str}. StartEntryID: {entry_id or 'Auto'}, UseAllVariations: {use_all_variations}, Workers: {num_workers}."
+    )
     current_process_info = psutil.Process()
+
     def _log_resource_usage(context_message: str = ""):
         mem_rss_mb = current_process_info.memory_info().rss / (1024**2)
         cpu_perc = current_process_info.cpu_percent(interval=0.01)
-        logger.debug(f"Resource Usage {context_message} (PID {current_process_info.pid}): RSS={mem_rss_mb:.2f}MB, CPU={cpu_perc:.1f}%")
+        logger.debug(
+            f"Resource Usage {context_message} (PID {current_process_info.pid}): RSS={mem_rss_mb:.2f}MB, CPU={cpu_perc:.1f}%"
+        )
 
     _log_resource_usage("at start of process_restart_batch")
     try:
@@ -774,40 +782,81 @@ async def process_restart_batch(
     except ValueError:
         error_msg = f"Invalid FileID format: '{file_id_db_str}'. Must be integer."
         logger.error(error_msg)
-        log_url = await upload_log_file(file_id_db_str, current_log_filename, logger, db_record_file_id_to_update=file_id_db_str)
-        return {"error": error_msg, "log_filename": current_log_filename, "log_public_url": log_url or "", "last_entry_id_processed": str(entry_id or "")}
+        log_url = await upload_log_file(
+            file_id_db_str,
+            current_log_filename,
+            logger,
+            db_record_file_id_to_update=file_id_db_str,
+        )
+        return {
+            "error": error_msg,
+            "log_filename": current_log_filename,
+            "log_public_url": log_url or "",
+            "last_entry_id_processed": str(entry_id or ""),
+        }
 
     BATCH_SIZE_PER_GATHER = max(1, min(20, num_workers * 2))
     MAX_CONCURRENT_ENTRY_PROCESSING = max(num_workers, 5)
     MAX_ENTRY_ATTEMPTS = 3
     configured_search_endpoint = SEARCH_PROXY_API_URL
-  
-    logger.debug(f"Batch Config for FileID {file_id_for_db}: BatchSize={BATCH_SIZE_PER_GATHER}, MaxConcurrentEntries={MAX_CONCURRENT_ENTRY_PROCESSING}, MaxEntryAttempts={MAX_ENTRY_ATTEMPTS}.")
+
+    logger.debug(
+        f"Batch Config for FileID {file_id_for_db}: BatchSize={BATCH_SIZE_PER_GATHER}, MaxConcurrentEntries={MAX_CONCURRENT_ENTRY_PROCESSING}, MaxEntryAttempts={MAX_ENTRY_ATTEMPTS}."
+    )
 
     try:
         async with async_engine.connect() as db_conn_validate:
-            file_check_res = await db_conn_validate.execute(text(f"SELECT 1 FROM {IMAGE_SCRAPER_FILES_TABLE_NAME} WHERE {IMAGE_SCRAPER_FILES_PK_COLUMN} = :fid"), {"fid": file_id_for_db})
+            file_check_res = await db_conn_validate.execute(
+                text(
+                    f"SELECT 1 FROM {IMAGE_SCRAPER_FILES_TABLE_NAME} WHERE {IMAGE_SCRAPER_FILES_PK_COLUMN} = :fid"
+                ),
+                {"fid": file_id_for_db},
+            )
             if not file_check_res.scalar_one_or_none():
-                # ... (error handling as before)
                 error_msg = f"FileID {file_id_for_db} not found in {IMAGE_SCRAPER_FILES_TABLE_NAME}."
                 logger.error(error_msg)
-                log_url = await upload_log_file(file_id_db_str, current_log_filename, logger, db_record_file_id_to_update=file_id_db_str)
-                return {"error": error_msg, "log_filename": current_log_filename, "log_public_url": log_url or "", "last_entry_id_processed": str(entry_id or "")}
+                log_url = await upload_log_file(
+                    file_id_db_str,
+                    current_log_filename,
+                    logger,
+                    db_record_file_id_to_update=file_id_db_str,
+                )
+                return {
+                    "error": error_msg,
+                    "log_filename": current_log_filename,
+                    "log_public_url": log_url or "",
+                    "last_entry_id_processed": str(entry_id or ""),
+                }
 
     except SQLAlchemyError as db_exc_validate:
-        # ... (error handling as before)
-        error_msg = f"Database error validating FileID {file_id_for_db}: {db_exc_validate}"
+        error_msg = (
+            f"Database error validating FileID {file_id_for_db}: {db_exc_validate}"
+        )
         logger.error(error_msg, exc_info=True)
-        log_url = await upload_log_file(file_id_db_str, current_log_filename, logger, db_record_file_id_to_update=file_id_db_str)
-        return {"error": error_msg, "log_filename": current_log_filename, "log_public_url": log_url or "", "last_entry_id_processed": str(entry_id or "")}
+        log_url = await upload_log_file(
+            file_id_db_str,
+            current_log_filename,
+            logger,
+            db_record_file_id_to_update=file_id_db_str,
+        )
+        return {
+            "error": error_msg,
+            "log_filename": current_log_filename,
+            "log_public_url": log_url or "",
+            "last_entry_id_processed": str(entry_id or ""),
+        }
 
-    brand_rules_data = await fetch_brand_rules(BRAND_RULES_URL, max_attempts=3, timeout=15, logger=logger)
-    if not brand_rules_data: brand_rules_data = {} # Ensure it's a dict
+    brand_rules_data = await fetch_brand_rules(
+        BRAND_RULES_URL, max_attempts=3, timeout=15, logger=logger
+    )
+    if not brand_rules_data:
+        brand_rules_data = {}  # Ensure it's a dict
 
     entries_to_process_list: List[Tuple] = []
     try:
         async with async_engine.connect() as db_conn_fetch:
-            sql_fetch_entries = text("""
+            sql_fetch_entries = text(
+                """
                 SELECT r.{SCRAPER_RECORDS_PK_COLUMN}, r.{SCRAPER_RECORDS_PRODUCT_MODEL_COLUMN}, 
                     r.{SCRAPER_RECORDS_PRODUCT_BRAND_COLUMN}, r.{SCRAPER_RECORDS_PRODUCT_COLOR_COLUMN}, 
                     r.{SCRAPER_RECORDS_PRODUCT_CATEGORY_COLUMN}
@@ -823,156 +872,279 @@ async def process_restart_batch(
                 )
                 ORDER BY r.{SCRAPER_RECORDS_PK_COLUMN};
             """.format(
-                SCRAPER_RECORDS_PK_COLUMN=SCRAPER_RECORDS_PK_COLUMN,
-                SCRAPER_RECORDS_PRODUCT_MODEL_COLUMN=SCRAPER_RECORDS_PRODUCT_MODEL_COLUMN,
-                SCRAPER_RECORDS_PRODUCT_BRAND_COLUMN=SCRAPER_RECORDS_PRODUCT_BRAND_COLUMN,
-                SCRAPER_RECORDS_PRODUCT_COLOR_COLUMN=SCRAPER_RECORDS_PRODUCT_COLOR_COLUMN,
-                SCRAPER_RECORDS_PRODUCT_CATEGORY_COLUMN=SCRAPER_RECORDS_PRODUCT_CATEGORY_COLUMN,
-                SCRAPER_RECORDS_TABLE_NAME=SCRAPER_RECORDS_TABLE_NAME,
-                SCRAPER_RECORDS_FILE_ID_FK_COLUMN=SCRAPER_RECORDS_FILE_ID_FK_COLUMN,
-                IMAGE_SCRAPER_RESULT_TABLE_NAME=IMAGE_SCRAPER_RESULT_TABLE_NAME,
-                IMAGE_SCRAPER_RESULT_ENTRY_ID_FK_COLUMN=IMAGE_SCRAPER_RESULT_ENTRY_ID_FK_COLUMN,
-                IMAGE_SCRAPER_RESULT_SORT_ORDER_COLUMN=IMAGE_SCRAPER_RESULT_SORT_ORDER_COLUMN
-            ))
-            db_res_entries = await db_conn_fetch.execute(sql_fetch_entries, {"fid": file_id_for_db})
+                    SCRAPER_RECORDS_PK_COLUMN=SCRAPER_RECORDS_PK_COLUMN,
+                    SCRAPER_RECORDS_PRODUCT_MODEL_COLUMN=SCRAPER_RECORDS_PRODUCT_MODEL_COLUMN,
+                    SCRAPER_RECORDS_PRODUCT_BRAND_COLUMN=SCRAPER_RECORDS_PRODUCT_BRAND_COLUMN,
+                    SCRAPER_RECORDS_PRODUCT_COLOR_COLUMN=SCRAPER_RECORDS_PRODUCT_COLOR_COLUMN,
+                    SCRAPER_RECORDS_PRODUCT_CATEGORY_COLUMN=SCRAPER_RECORDS_PRODUCT_CATEGORY_COLUMN,
+                    SCRAPER_RECORDS_TABLE_NAME=SCRAPER_RECORDS_TABLE_NAME,
+                    SCRAPER_RECORDS_FILE_ID_FK_COLUMN=SCRAPER_RECORDS_FILE_ID_FK_COLUMN,
+                    IMAGE_SCRAPER_RESULT_TABLE_NAME=IMAGE_SCRAPER_RESULT_TABLE_NAME,
+                    IMAGE_SCRAPER_RESULT_ENTRY_ID_FK_COLUMN=IMAGE_SCRAPER_RESULT_ENTRY_ID_FK_COLUMN,
+                    IMAGE_SCRAPER_RESULT_SORT_ORDER_COLUMN=IMAGE_SCRAPER_RESULT_SORT_ORDER_COLUMN,
+                )
+            )
+            db_res_entries = await db_conn_fetch.execute(
+                sql_fetch_entries, {"fid": file_id_for_db}
+            )
             entries_to_process_list = db_res_entries.fetchall()
             db_res_entries.close()
-        logger.info(f"FileID {file_id_for_db}: Fetched {len(entries_to_process_list)} entries that have no results with SortOrder = 1.")
+        logger.info(
+            f"FileID {file_id_for_db}: Fetched {len(entries_to_process_list)} entries that have no results with SortOrder = 1."
+        )
     except SQLAlchemyError as db_exc_fetch:
         error_msg = f"Database error fetching entries for FileID {file_id_for_db}: {db_exc_fetch}"
         logger.error(error_msg, exc_info=True)
-        log_url = await upload_log_file(file_id_db_str, current_log_filename, logger, db_record_file_id_to_update=file_id_db_str)
-        return {"error": error_msg, "log_filename": current_log_filename, "log_public_url": log_url or "", "last_entry_id_processed": "0"}
+        log_url = await upload_log_file(
+            file_id_db_str,
+            current_log_filename,
+            logger,
+            db_record_file_id_to_update=file_id_db_str,
+        )
+        return {
+            "error": error_msg,
+            "log_filename": current_log_filename,
+            "log_public_url": log_url or "",
+            "last_entry_id_processed": "0",
+        }
     if not entries_to_process_list:
         success_msg = f"No entries with positive SortOrder results found for FileID {file_id_for_db}."
         logger.info(success_msg)
-        log_url = await upload_log_file(file_id_db_str, current_log_filename, logger, db_record_file_id_to_update=file_id_db_str)
+        log_url = await upload_log_file(
+            file_id_db_str,
+            current_log_filename,
+            logger,
+            db_record_file_id_to_update=file_id_db_str,
+        )
         return {
-            "message": success_msg, 
-            "file_id": file_id_db_str, 
+            "message": success_msg,
+            "file_id": file_id_db_str,
             "total_entries_fetched_for_processing": 0,
-            "successful_entries_processed": 0, 
+            "successful_entries_processed": 0,
             "failed_entries_processed": 0,
-            "log_filename": current_log_filename, 
+            "log_filename": current_log_filename,
             "log_public_url": log_url or "",
-            "last_entry_id_processed": "0"
+            "last_entry_id_processed": "0",
         }
 
-    batched_entry_groups = [entries_to_process_list[i:i + BATCH_SIZE_PER_GATHER] for i in range(0, len(entries_to_process_list), BATCH_SIZE_PER_GATHER)]
-    logger.info(f"FileID {file_id_for_db}: Divided {len(entries_to_process_list)} entries into {len(batched_entry_groups)} batches.")
+    batched_entry_groups = [
+        entries_to_process_list[i : i + BATCH_SIZE_PER_GATHER]
+        for i in range(0, len(entries_to_process_list), BATCH_SIZE_PER_GATHER)
+    ]
+    logger.info(
+        f"FileID {file_id_for_db}: Divided {len(entries_to_process_list)} entries into {len(batched_entry_groups)} batches."
+    )
     count_successful_entries = 0
     count_failed_entries = 0
-    max_successful_entry_id_this_run = -1 # Ensure it's less than any valid ID
+    max_successful_entry_id_this_run = -1  # Ensure it's less than any valid ID
 
     entry_processing_semaphore = asyncio.Semaphore(MAX_CONCURRENT_ENTRY_PROCESSING)
 
-    async def _process_single_entry_with_retry(entry_data_tuple: tuple) -> tuple[int, bool]:
-        entry_id_curr, model_curr, brand_curr, color_curr, category_curr = entry_data_tuple
+    async def _process_single_entry_with_retry(
+        entry_data_tuple: tuple,
+    ) -> tuple[int, bool]:
+        (
+            entry_id_curr,
+            model_curr,
+            brand_curr,
+            color_curr,
+            category_curr,
+        ) = entry_data_tuple
         async with entry_processing_semaphore:
             for attempt in range(1, MAX_ENTRY_ATTEMPTS + 1):
-                logger.info(f"FileID {file_id_for_db}, EntryID {entry_id_curr}: Attempt {attempt}/{MAX_ENTRY_ATTEMPTS} processing.")
+                logger.info(
+                    f"FileID {file_id_for_db}, EntryID {entry_id_curr}: Attempt {attempt}/{MAX_ENTRY_ATTEMPTS} processing."
+                )
                 try:
                     search_results = await orchestrate_entry_search(
-                        original_search_term=str(model_curr) if model_curr else "", # Ensure string
-                        original_brand=str(brand_curr) if brand_curr else None, # Ensure string or None
-                        entry_id=entry_id_curr, search_api_endpoint=configured_search_endpoint,
-                        use_all_variations=use_all_variations, file_id_context=file_id_for_db,
-                        logger=logger, brand_rules=brand_rules_data
+                        original_search_term=str(model_curr)
+                        if model_curr
+                        else "",  # Ensure string
+                        original_brand=str(brand_curr)
+                        if brand_curr
+                        else None,  # Ensure string or None
+                        entry_id=entry_id_curr,
+                        search_api_endpoint=configured_search_endpoint,
+                        use_all_variations=use_all_variations,
+                        file_id_context=file_id_for_db,
+                        logger=logger,
+                        brand_rules=brand_rules_data,
                     )
-                    valid_results = [r for r in search_results if r.get("ImageUrl") and not str(r["ImageUrl"]).startswith("placeholder://")]
+                    valid_results = [
+                        r
+                        for r in search_results
+                        if r.get("ImageUrl")
+                        and not str(r["ImageUrl"]).startswith("placeholder://")
+                    ]
                     if not valid_results:
-                        logger.warning(f"FileID {file_id_for_db}, EntryID {entry_id_curr}: No valid results (Attempt {attempt}).")
-                        if attempt == MAX_ENTRY_ATTEMPTS: return entry_id_curr, False
+                        logger.warning(
+                            f"FileID {file_id_for_db}, EntryID {entry_id_curr}: No valid results (Attempt {attempt})."
+                        )
+                        if attempt == MAX_ENTRY_ATTEMPTS:
+                            return entry_id_curr, False
                         await asyncio.sleep(attempt * 1.5)
                         continue
                     enqueue_success = await insert_search_results(
-                        results=valid_results, logger=logger, file_id=file_id_db_str, background_tasks=background_tasks
+                        results=valid_results,
+                        logger=logger,
+                        file_id=file_id_db_str,
+                        background_tasks=background_tasks,
                     )
                     if enqueue_success:
-                        logger.info(f"FileID {file_id_for_db}, EntryID {entry_id_curr}: Enqueued {len(valid_results)} results.")
+                        logger.info(
+                            f"FileID {file_id_for_db}, EntryID {entry_id_curr}: Enqueued {len(valid_results)} results."
+                        )
                         step1_sql = f"UPDATE {SCRAPER_RECORDS_TABLE_NAME} SET {SCRAPER_RECORDS_STEP1_COLUMN} = GETUTCDATE() WHERE {SCRAPER_RECORDS_PK_COLUMN} = :eid"
                         await enqueue_db_update(
-                            file_id=file_id_db_str, sql=step1_sql, params={"eid": entry_id_curr},
-                            task_type=f"update_step1_entry_{entry_id_curr}", correlation_id=str(uuid.uuid4()), logger_param=logger
+                            file_id=file_id_db_str,
+                            sql=step1_sql,
+                            params={"eid": entry_id_curr},
+                            task_type=f"update_step1_entry_{entry_id_curr}",
+                            correlation_id=str(uuid.uuid4()),
+                            logger_param=logger,
                         )
                         return entry_id_curr, True
                     else:
-                        logger.error(f"FileID {file_id_for_db}, EntryID {entry_id_curr}: Failed to enqueue results (Attempt {attempt}).")
-                        if attempt == MAX_ENTRY_ATTEMPTS: return entry_id_curr, False
+                        logger.error(
+                            f"FileID {file_id_for_db}, EntryID {entry_id_curr}: Failed to enqueue results (Attempt {attempt})."
+                        )
+                        if attempt == MAX_ENTRY_ATTEMPTS:
+                            return entry_id_curr, False
                         await asyncio.sleep(attempt * 1.5)
                         continue
                 except Exception as e_entry_proc:
-                    logger.error(f"FileID {file_id_for_db}, EntryID {entry_id_curr}: Exception attempt {attempt}: {e_entry_proc}", exc_info=True)
-                    if attempt == MAX_ENTRY_ATTEMPTS: return entry_id_curr, False
+                    logger.error(
+                        f"FileID {file_id_for_db}, EntryID {entry_id_curr}: Exception attempt {attempt}: {e_entry_proc}",
+                        exc_info=True,
+                    )
+                    if attempt == MAX_ENTRY_ATTEMPTS:
+                        return entry_id_curr, False
                     await asyncio.sleep(attempt * 2)
-            return entry_id_curr, False # Should not be reached if loop logic is correct
+            return (
+                entry_id_curr,
+                False,
+            )  # Should not be reached if loop logic is correct
 
     for batch_idx, entry_group in enumerate(batched_entry_groups, 1):
-        logger.info(f"FileID {file_id_for_db}: Processing batch {batch_idx}/{len(batched_entry_groups)} with {len(entry_group)} entries.")
+        logger.info(
+            f"FileID {file_id_for_db}: Processing batch {batch_idx}/{len(batched_entry_groups)} with {len(entry_group)} entries."
+        )
         batch_start_time = time.monotonic()
-        entry_processing_outcomes = await asyncio.gather(*[_process_single_entry_with_retry(et) for et in entry_group], return_exceptions=True)
-        for original_entry_tuple, outcome_result in zip(entry_group, entry_processing_outcomes):
+        entry_processing_outcomes = await asyncio.gather(
+            *[_process_single_entry_with_retry(et) for et in entry_group],
+            return_exceptions=True,
+        )
+        for original_entry_tuple, outcome_result in zip(
+            entry_group, entry_processing_outcomes
+        ):
             entry_id_processed = original_entry_tuple[0]
             if isinstance(outcome_result, Exception):
-                logger.error(f"FileID {file_id_for_db}, EntryID {entry_id_processed}: Failed with unhandled exception: {outcome_result}", exc_info=outcome_result)
+                logger.error(
+                    f"FileID {file_id_for_db}, EntryID {entry_id_processed}: Failed with unhandled exception: {outcome_result}",
+                    exc_info=outcome_result,
+                )
                 count_failed_entries += 1
             elif isinstance(outcome_result, tuple) and len(outcome_result) == 2:
                 _, success_status = outcome_result
                 if success_status:
                     count_successful_entries += 1
-                    max_successful_entry_id_this_run = max(max_successful_entry_id_this_run, entry_id_processed)
+                    max_successful_entry_id_this_run = max(
+                        max_successful_entry_id_this_run, entry_id_processed
+                    )
                 else:
                     count_failed_entries += 1
             else:
-                logger.error(f"FileID {file_id_for_db}, EntryID {entry_id_processed}: Unexpected outcome: {outcome_result}")
+                logger.error(
+                    f"FileID {file_id_for_db}, EntryID {entry_id_processed}: Unexpected outcome: {outcome_result}"
+                )
                 count_failed_entries += 1
         batch_duration_s = time.monotonic() - batch_start_time
-        logger.info(f"FileID {file_id_for_db}: Batch {batch_idx} completed in {batch_duration_s:.2f}s. Totals - Success: {count_successful_entries}, Fail: {count_failed_entries}.")
+        logger.info(
+            f"FileID {file_id_for_db}: Batch {batch_idx} completed in {batch_duration_s:.2f}s. Totals - Success: {count_successful_entries}, Fail: {count_failed_entries}."
+        )
         _log_resource_usage(f"after batch {batch_idx}")
-        await asyncio.sleep(0.1) # Shorter sleep
+        await asyncio.sleep(0.1)  # Shorter sleep
 
-    logger.info(f"FileID {file_id_for_db}: All batches processed. Final - Success: {count_successful_entries}, Fail: {count_failed_entries} of {len(entries_to_process_list)} attempted.")
+    logger.info(
+        f"FileID {file_id_for_db}: All batches processed. Final - Success: {count_successful_entries}, Fail: {count_failed_entries} of {len(entries_to_process_list)} attempted."
+    )
 
     if count_successful_entries > 0:
         logger.info(f"FileID {file_id_for_db}: Enqueuing update for ImageCompleteTime.")
         complete_time_sql = f"UPDATE {IMAGE_SCRAPER_FILES_TABLE_NAME} SET {IMAGE_SCRAPER_FILES_IMAGE_COMPLETE_TIME_COLUMN} = GETUTCDATE() WHERE {IMAGE_SCRAPER_FILES_PK_COLUMN} = :fid"
         await enqueue_db_update(
-            file_id=file_id_db_str, sql=complete_time_sql, params={"fid": file_id_for_db},
-            task_type=f"update_img_complete_time_file_{file_id_for_db}", correlation_id=str(uuid.uuid4()), logger_param=logger
+            file_id=file_id_db_str,
+            sql=complete_time_sql,
+            params={"fid": file_id_for_db},
+            task_type=f"update_img_complete_time_file_{file_id_for_db}",
+            correlation_id=str(uuid.uuid4()),
+            logger_param=logger,
         )
 
-    logger.info(f"FileID {file_id_for_db}: Initiating post-search tasks (sorting, file generation).")
+    logger.info(
+        f"FileID {file_id_for_db}: Initiating post-search tasks (file generation only; bypassing sorting to preserve insertion order)."
+    )
     try:
-        await update_sort_order(file_id_db_str, logger=logger, background_tasks=background_tasks)
-        logger.info(f"FileID {file_id_for_db}: Sort order update task initiated.")
+        # Bypassing sort order update to keep original insertion order
+        # await update_sort_order(file_id_db_str, logger=logger, background_tasks=background_tasks)
+        # logger.info(f"FileID {file_id_for_db}: Sort order update bypassed.")
         await run_generate_download_file(file_id_db_str, logger, background_tasks)
-        logger.info(f"FileID {file_id_for_db}: Download file generation task initiated.")
+        logger.info(
+            f"FileID {file_id_for_db}: Download file generation task initiated."
+        )
     except Exception as e_post_tasks:
-        logger.error(f"FileID {file_id_for_db}: Error during post-search tasks: {e_post_tasks}", exc_info=True)
+        logger.error(
+            f"FileID {file_id_for_db}: Error during post-search tasks: {e_post_tasks}",
+            exc_info=True,
+        )
 
-    final_log_s3_url = await upload_log_file(file_id_db_str, current_log_filename, logger, db_record_file_id_to_update=file_id_db_str)
+    final_log_s3_url = await upload_log_file(
+        file_id_db_str,
+        current_log_filename,
+        logger,
+        db_record_file_id_to_update=file_id_db_str,
+    )
     email_to_list = await get_send_to_email(file_id_for_db, logger=logger)
     if email_to_list:
         subject = f"SuperScraper Batch Report for FileID: {file_id_db_str}"
-        body = (f"Batch processing for FileID {file_id_db_str} finished.\n\n"
-                f"Total entries fetched for this run: {len(entries_to_process_list)}\n"
-                f"Successfully processed: {count_successful_entries}\nFailed this run: {count_failed_entries}\n"
-                f"Highest EntryID successfully processed: {max_successful_entry_id_this_run if max_successful_entry_id_this_run >=0 else 'N/A'}\n"
-                f"Settings: UseAllVariations={use_all_variations}, NumWorkersHint={num_workers}\n"
-                f"Log: {final_log_s3_url or 'Log upload failed.'}\n\nPost-search tasks initiated.")
+        body = (
+            f"Batch processing for FileID {file_id_db_str} finished.\n\n"
+            f"Total entries fetched for this run: {len(entries_to_process_list)}\n"
+            f"Successfully processed: {count_successful_entries}\nFailed this run: {count_failed_entries}\n"
+            f"Highest EntryID successfully processed: {max_successful_entry_id_this_run if max_successful_entry_id_this_run >=0 else 'N/A'}\n"
+            f"Settings: UseAllVariations={use_all_variations}, NumWorkersHint={num_workers}\n"
+            f"Log: {final_log_s3_url or 'Log upload failed.'}\n\nPost-search tasks initiated."
+        )
         try:
-            await send_message_email(email_to_list, subject=subject, message=body, logger=logger)
-            logger.info(f"FileID {file_id_for_db}: Completion email sent to: {email_to_list}")
-        except Exception as e_email: logger.error(f"FileID {file_id_for_db}: Failed to send email: {e_email}", exc_info=True)
+            await send_message_email(
+                email_to_list, subject=subject, message=body, logger=logger
+            )
+            logger.info(
+                f"FileID {file_id_for_db}: Completion email sent to: {email_to_list}"
+            )
+        except Exception as e_email:
+            logger.error(
+                f"FileID {file_id_for_db}: Failed to send email: {e_email}",
+                exc_info=True,
+            )
 
     return {
-        "message": "Search processing batch completed.", "file_id": file_id_db_str,
+        "message": "Search processing batch completed.",
+        "file_id": file_id_db_str,
         "total_entries_fetched_for_processing": len(entries_to_process_list),
-        "successful_entries_processed": count_successful_entries, "failed_entries_processed": count_failed_entries,
-        "last_entry_id_successfully_processed_in_run": max_successful_entry_id_this_run if max_successful_entry_id_this_run >=0 else None,
-        "log_filename_on_server": current_log_filename, "log_public_url": final_log_s3_url or "N/A",
-        "settings_used": {"use_all_variations": use_all_variations, "num_workers_hint": num_workers}
+        "successful_entries_processed": count_successful_entries,
+        "failed_entries_processed": count_failed_entries,
+        "last_entry_id_successfully_processed_in_run": max_successful_entry_id_this_run
+        if max_successful_entry_id_this_run >= 0
+        else None,
+        "log_filename_on_server": current_log_filename,
+        "log_public_url": final_log_s3_url or "N/A",
+        "settings_used": {
+            "use_all_variations": use_all_variations,
+            "num_workers_hint": num_workers,
+        },
     }
+
 
 @router.post("/populate-results-from-warehouse/{file_id}", tags=["Database"])
 async def api_populate_results_from_warehouse(
