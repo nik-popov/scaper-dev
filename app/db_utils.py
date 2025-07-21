@@ -294,46 +294,38 @@ async def insert_search_results(
     errors = []
 
     logger.debug(f"[{correlation_id}] Processing input results")
-    # Group results by EntryID and assign SortOrder based on input order
-    from collections import defaultdict
-    grouped_results = defaultdict(list)
-    for idx, res in enumerate(results):
+    for res in results:
         try:
             entry_id = int(res["EntryID"])
-            grouped_results[entry_id].append((idx, res))
+            logger.debug(f"[{correlation_id}] EntryID: {entry_id}, type: {type(entry_id)}")
         except (ValueError, TypeError) as e:
             errors.append(f"Invalid EntryID value: {res.get('EntryID')}")
             logger.error(f"[{correlation_id}] Worker PID {process.pid}: {errors[-1]}")
             continue
 
-    for entry_id, group in grouped_results.items():
-        # Sort group by original index to preserve input order
-        group.sort(key=lambda x: x[0])
-        for sort_order, (idx, res) in enumerate(group, start=1):
-            category = res.get("ProductCategory", "").lower()
-            image_url = clean_url_string(res.get("ImageUrl", ""), logger=logger)
-            image_url_thumbnail = clean_url_string(res.get("ImageUrlThumbnail", ""), logger=logger)
-            image_desc = clean_string(res.get("ImageDesc", ""), preserve_url=False)
-            image_source = clean_url_string(res.get("ImageSource", ""), logger=logger)
+        category = res.get("ProductCategory", "").lower()
+        image_url = clean_url_string(res.get("ImageUrl", ""), logger=logger)
+        image_url_thumbnail = clean_url_string(res.get("ImageUrlThumbnail", ""), logger=logger)
+        image_desc = clean_string(res.get("ImageDesc", ""), preserve_url=False)
+        image_source = clean_url_string(res.get("ImageSource", ""), logger=logger)
 
-            logger.debug(f"[{correlation_id}] Validating ImageUrl: {image_url}")
-            if not image_url or not validate_thumbnail_url(image_url, logger):
-                errors.append(f"Invalid ImageUrl skipped: {image_url}")
-                logger.warning(f"[{correlation_id}] Worker PID {process.pid}: {errors[-1]}")
-                continue
-            if image_url_thumbnail and not validate_thumbnail_url(image_url_thumbnail, logger):
-                logger.debug(f"[{correlation_id}] Invalid thumbnail URL, setting to None: {image_url_thumbnail}")
-                image_url_thumbnail = None
+        logger.debug(f"[{correlation_id}] Validating ImageUrl: {image_url}")
+        if not image_url or not validate_thumbnail_url(image_url, logger):
+            errors.append(f"Invalid ImageUrl skipped: {image_url}")
+            logger.warning(f"[{correlation_id}] Worker PID {process.pid}: {errors[-1]}")
+            continue
+        if image_url_thumbnail and not validate_thumbnail_url(image_url_thumbnail, logger):
+            logger.debug(f"[{correlation_id}] Invalid thumbnail URL, setting to None: {image_url_thumbnail}")
+            image_url_thumbnail = None
 
-            data.append({
-                "EntryID": entry_id,
-                "ImageUrl": image_url,
-                "ImageDesc": image_desc or None,
-                "ImageSource": image_source or None,
-                "ImageUrlThumbnail": image_url_thumbnail or None,
-                "CreateTime": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "SortOrder": sort_order  # Assign initial Google order as SortOrder
-            })
+        data.append({
+            "EntryID": entry_id,
+            "ImageUrl": image_url,
+            "ImageDesc": image_desc or None,
+            "ImageSource": image_source or None,
+            "ImageUrlThumbnail": image_url_thumbnail or None,
+            "CreateTime": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        })
 
     logger.info(f"[{correlation_id}] Valid rows to insert: {len(data)}, Errors: {len(errors)}")
     if errors:
@@ -357,8 +349,8 @@ async def insert_search_results(
             return False
 
         insert_query = """
-            INSERT INTO utb_ImageScraperResult (EntryID, ImageUrl, ImageDesc, ImageSource, ImageUrlThumbnail, CreateTime, SortOrder)
-            VALUES (:EntryID, :ImageUrl, :ImageDesc, :ImageSource, :ImageUrlThumbnail, :CreateTime, :SortOrder)
+            INSERT INTO utb_ImageScraperResult (EntryID, ImageUrl, ImageDesc, ImageSource, ImageUrlThumbnail, CreateTime)
+            VALUES (:EntryID, :ImageUrl, :ImageDesc, :ImageSource, :ImageUrlThumbnail, :CreateTime)
         """
 
         batch_size = 100
@@ -417,7 +409,6 @@ async def insert_search_results(
             await producer.close()
             logger.debug(f"[{correlation_id}] Closed RabbitMQ producer")
         logger.info(f"[{correlation_id}] Worker PID {process.pid}: Completed insert_search_results for FileID {file_id}")
-
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=2, max=10),
@@ -649,16 +640,20 @@ async def update_initial_sort_order(file_id: str, logger: Optional[logging.Logge
             )
 
             if updates:
-                values_clause = ", ".join(f"({result_id}, {sort_order})" for result_id, sort_order in updates)
-                cursor.execute(
-                    f"""
-                    UPDATE utb_ImageScraperResult
-                    SET SortOrder = v.sort_order
-                    FROM (VALUES {values_clause}) AS v(result_id, sort_order)
-                    WHERE utb_ImageScraperResult.ResultID = v.result_id
-                    """
-                )
-                logger.info(f"Updated {len(updates)} rows for FileID: {file_id}")
+                batch_size = 1000  # SQL Server limit for VALUES rows
+                for i in range(0, len(updates), batch_size):
+                    batch = updates[i:i + batch_size]
+                    values_clause = ", ".join(f"({result_id}, {sort_order})" for result_id, sort_order in batch)
+                    cursor.execute(
+                        f"""
+                        UPDATE utb_ImageScraperResult
+                        SET SortOrder = v.sort_order
+                        FROM (VALUES {values_clause}) AS v(result_id, sort_order)
+                        WHERE utb_ImageScraperResult.ResultID = v.result_id
+                        """
+                    )
+                    logger.debug(f"Updated batch {i//batch_size + 1} with {len(batch)} rows for FileID: {file_id}")
+                logger.info(f"Updated {len(updates)} rows in {len(updates)//batch_size + 1 if updates else 0} batches for FileID: {file_id}")
 
             cursor.execute(
                 """
