@@ -46,7 +46,7 @@ from db_utils import (enqueue_db_update, fetch_last_valid_entry,
                       insert_search_results, update_file_generate_complete,
                       update_file_location_complete, update_initial_sort_order,
                       update_log_url_in_db)
-from email_utils import send_message_email
+from email_utils import send_message_email, send_email
 from icon_image_lib.google_parser import process_search_result
 from logging_config import setup_job_logger
 from rabbitmq_producer import RabbitMQProducer
@@ -2080,14 +2080,26 @@ async def api_warehouse_batch_query(
             job_run_id, log_file_path, logger, db_record_file_id_to_update=file_id
         )
 
-        if matching_records and email and csv_s3_url:
+        if email and csv_s3_url:
             try:
-                subject = f"Warehouse Batch Query Results for FileID {file_id}"
-                body = f"{final_message}\n\nLog URL: {final_log_s3_url}\nCSV URL: {csv_s3_url}"
-                await send_message_email(to_emails=email, subject=subject, message=body, logger=logger)
-                logger.info(f"[{job_run_id}] Email sent to {email} with CSV URL.")
+                subject = f"Warehouse Batch Query Results - FileID {file_id}"
+                await send_email(
+                    to_emails=email, 
+                    subject=subject, 
+                    download_url=csv_s3_url, 
+                    job_id=job_run_id, 
+                    logger=logger
+                )
+                logger.info(f"[{job_run_id}] Comprehensive email sent to {email} with CSV URL and job details.")
             except Exception as e:
                 logger.error(f"[{job_run_id}] Failed to send email to {email}: {e}")
+                try:
+                    fallback_subject = f"Warehouse Batch Query Results for FileID {file_id}"
+                    fallback_body = f"{final_message}\n\nLog URL: {final_log_s3_url}\nCSV URL: {csv_s3_url}"
+                    await send_message_email(to_emails=email, subject=fallback_subject, message=fallback_body, logger=logger)
+                    logger.info(f"[{job_run_id}] Fallback email sent to {email}.")
+                except Exception as fallback_e:
+                    logger.error(f"[{job_run_id}] Failed to send fallback email to {email}: {fallback_e}")
 
         # Clean up local CSV file if exists
         if csv_file_path and os.path.exists(csv_file_path):
