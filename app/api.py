@@ -1876,6 +1876,7 @@ async def api_reset_step1_status_for_file(file_id: str):
     except ValueError: err_msg=f"Invalid FileID: {file_id}"; logger.error(f"[{job_run_id}] {err_msg}"); await upload_log_file(job_run_id, log_file_path, logger, db_record_file_id_to_update=file_id); raise HTTPException(status_code=400, detail=err_msg)
     except Exception as e_main: logger.critical(f"[{job_run_id}] Critical error resetting Step1: {e_main}", exc_info=True); crit_log_url = await upload_log_file(job_run_id, log_file_path, logger, db_record_file_id_to_update=file_id); raise HTTPException(status_code=500, detail=f"Internal server error. Log: {crit_log_url}")
 
+
 @router.get("/warehouse/batch-query/{file_id}", tags=["Warehouse"])
 async def api_warehouse_batch_query(
     file_id: str,
@@ -2053,12 +2054,25 @@ async def api_warehouse_batch_query(
                 writer.writeheader()
                 for entry_id, match in sorted(matching_records.items()):
                     writer.writerow({'EntryID': entry_id, **match})
+            csv_save_as = f"job_results/{job_run_id}/{job_run_id}_matching_records.csv"
             csv_s3_url = await upload_log_file(
                 job_run_id,
                 csv_file_path,
                 logger,
                 db_record_file_id_to_update=file_id,
+                save_as=csv_save_as,
             )
+            # Update DB with results CSV URL
+            if csv_s3_url:
+                await enqueue_db_update(
+                    file_id=job_run_id,
+                    sql=f"UPDATE {IMAGE_SCRAPER_FILES_TABLE_NAME} SET WarehouseResultsCSV = :csv_url WHERE {IMAGE_SCRAPER_FILES_PK_COLUMN} = :fid",
+                    params={"csv_url": csv_s3_url, "fid": file_id_int},
+                    task_type="update_warehouse_results_csv",
+                    correlation_id=str(uuid.uuid4()),
+                    logger_param=logger,
+                )
+                logger.info(f"[{job_run_id}] Enqueued DB update for WarehouseResultsCSV in FileID {file_id_int}.")
 
         final_message = f"Batch warehouse query for FileID '{file_id}' complete. Processed {len(results_data)} entries. Matching records: {len(matching_records)}."
         logger.info(f"[{job_run_id}] {final_message}")
@@ -2066,39 +2080,12 @@ async def api_warehouse_batch_query(
             job_run_id, log_file_path, logger, db_record_file_id_to_update=file_id
         )
 
-        if matching_records and email and csv_file_path and csv_s3_url:
-            import smtplib
-            from email.mime.multipart import MIMEMultipart
-            from email.mime.text import MIMEText
-            from email.mime.base import MIMEBase
-            from email import encoders
+        if matching_records and email and csv_s3_url:
             try:
                 subject = f"Warehouse Batch Query Results for FileID {file_id}"
                 body = f"{final_message}\n\nLog URL: {final_log_s3_url}\nCSV URL: {csv_s3_url}"
-                message = MIMEMultipart()
-                message['From'] = 'noreply@yourdomain.com'  # Replace with your sender email
-                message['To'] = email
-                message['Subject'] = subject
-                message.attach(MIMEText(body, 'plain'))
-                with open(csv_file_path, "rb") as attachment:
-                    part = MIMEBase("application", "octet-stream")
-                    part.set_payload(attachment.read())
-                    encoders.encode_base64(part)
-                    part.add_header(
-                        "Content-Disposition",
-                        f"attachment; filename= {os.path.basename(csv_file_path)}",
-                    )
-                    message.attach(part)
-                # Replace with your SMTP details
-                smtp_server = "smtp.yourdomain.com"
-                smtp_port = 587
-                smtp_user = "your_smtp_user"
-                smtp_password = "your_smtp_password"
-                with smtplib.SMTP(smtp_server, smtp_port) as server:
-                    server.starttls()
-                    server.login(smtp_user, smtp_password)
-                    server.sendmail(message['From'], email, message.as_string())
-                logger.info(f"[{job_run_id}] Email sent to {email} with CSV attachment.")
+                await send_message_email(to_emails=email, subject=subject, message=body, logger=logger)
+                logger.info(f"[{job_run_id}] Email sent to {email} with CSV URL.")
             except Exception as e:
                 logger.error(f"[{job_run_id}] Failed to send email to {email}: {e}")
 
@@ -2130,7 +2117,7 @@ async def api_warehouse_batch_query(
             status_code=500,
             detail=f"Critical internal error. Job Run ID: {job_run_id}. Log: {crit_err_log_url or 'Log upload failed.'}",
         )
-    
+
 @router.post("/reset-step1-for-no-results-entries/{file_id}", tags=["Database"])
 async def api_reset_step1_for_no_result_entries(file_id: str, entry_ids_filter: Optional[List[int]] = Query(None)):
     job_run_id = f"reset_step1_no_res_{file_id}_{uuid.uuid4().hex[:6]}"
