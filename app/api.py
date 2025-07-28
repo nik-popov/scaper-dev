@@ -2080,7 +2080,10 @@ async def api_warehouse_batch_query(
             job_run_id, log_file_path, logger, db_record_file_id_to_update=file_id
         )
 
+        logger.info(f"[{job_run_id}] Email sending check - email: {email}, csv_s3_url: {csv_s3_url}")
+        
         if email and csv_s3_url:
+            logger.info(f"[{job_run_id}] Email conditions met. Attempting to send comprehensive email to {email}")
             try:
                 subject = f"Warehouse Batch Query Results - FileID {file_id}"
                 await send_email(
@@ -2100,6 +2103,12 @@ async def api_warehouse_batch_query(
                     logger.info(f"[{job_run_id}] Fallback email sent to {email}.")
                 except Exception as fallback_e:
                     logger.error(f"[{job_run_id}] Failed to send fallback email to {email}: {fallback_e}")
+        else:
+            if not email:
+                logger.warning(f"[{job_run_id}] Email not sent - no email address provided")
+            if not csv_s3_url:
+                logger.warning(f"[{job_run_id}] Email not sent - no CSV URL available")
+            logger.info(f"[{job_run_id}] Email sending skipped due to missing conditions")
 
         # Clean up local CSV file if exists
         if csv_file_path and os.path.exists(csv_file_path):
