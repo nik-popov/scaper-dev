@@ -1885,6 +1885,7 @@ async def api_warehouse_batch_query(
         le=10000,
         description=f"Max records from {SCRAPER_RECORDS_TABLE_NAME} to process.",
     ),
+    email: Optional[str] = Query(None, description="Optional email address to send the results CSV to."),
 ):
     job_run_id = f"warehouse_batch_query_{file_id}_{uuid.uuid4().hex[:6]}"
     logger, log_file_path = setup_job_logger(job_id=job_run_id, console_output=True)
@@ -1897,12 +1898,11 @@ async def api_warehouse_batch_query(
         async with async_engine.connect() as conn:
             file_exists_q = await conn.execute(
                 text(
-                    f"SELECT 1, email FROM {IMAGE_SCRAPER_FILES_TABLE_NAME} WHERE {IMAGE_SCRAPER_FILES_PK_COLUMN} = :fid"
+                    f"SELECT 1 FROM {IMAGE_SCRAPER_FILES_TABLE_NAME} WHERE {IMAGE_SCRAPER_FILES_PK_COLUMN} = :fid"
                 ),
                 {"fid": file_id_int},
             )
-            row = file_exists_q.fetchone()
-            if not row:
+            if not file_exists_q.scalar_one_or_none():
                 logger.error(
                     f"[{job_run_id}] FileID '{file_id_int}' not found in {IMAGE_SCRAPER_FILES_TABLE_NAME}."
                 )
@@ -1915,7 +1915,6 @@ async def api_warehouse_batch_query(
                 raise HTTPException(
                     status_code=404, detail=f"FileID {file_id_int} not found."
                 )
-            email = row[1]
 
         # Fetch entries
         async with async_engine.connect() as conn:
@@ -2131,7 +2130,7 @@ async def api_warehouse_batch_query(
             status_code=500,
             detail=f"Critical internal error. Job Run ID: {job_run_id}. Log: {crit_err_log_url or 'Log upload failed.'}",
         )
-
+    
 @router.post("/reset-step1-for-no-results-entries/{file_id}", tags=["Database"])
 async def api_reset_step1_for_no_result_entries(file_id: str, entry_ids_filter: Optional[List[int]] = Query(None)):
     job_run_id = f"reset_step1_no_res_{file_id}_{uuid.uuid4().hex[:6]}"
