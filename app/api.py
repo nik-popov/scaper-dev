@@ -1960,7 +1960,49 @@ async def api_warehouse_batch_query(
         max_concurrent = 5
         entry_processing_semaphore = asyncio.Semaphore(max_concurrent)
         results_data = {}
-
+        # Include the missing function definition
+        async def search_warehouse_for_entry(entry: dict) -> dict:
+            if not entry or not entry.get("ProductModel"):
+                logger.warning(
+                    f"[{job_run_id}] No valid entry or ProductModel for EntryID {entry.get('EntryID', 'UNKNOWN')}"
+                )
+                return {}
+            product_model_clean = extract_starting_alphanum(entry["ProductModel"])
+            query = text(
+                f"""
+                SELECT {WAREHOUSE_IMAGES_MODEL_NUMBER_COLUMN}, {WAREHOUSE_IMAGES_MODEL_CLEAN_COLUMN}, {WAREHOUSE_IMAGES_MODEL_FOLDER_COLUMN}, {WAREHOUSE_IMAGES_MODEL_IMAGE_COLUMN}, {WAREHOUSE_IMAGES_MSRP_USD_COLUMN}, {WAREHOUSE_IMAGES_MSRP_EUR_COLUMN}
+                FROM {WAREHOUSE_IMAGES_TABLE_NAME}
+                WHERE {WAREHOUSE_IMAGES_MODEL_CLEAN_COLUMN} = :product_model_clean
+            """
+            )
+            try:
+                async with async_engine.connect() as conn:
+                    result = await conn.execute(
+                        query, {"product_model_clean": product_model_clean}
+                    )
+                    row = result.fetchone()
+                    if row:
+                        match = {
+                            "ModelNumber": row[0],
+                            "ModelClean": row[1],
+                            "ModelFolder": row[2],
+                            "ModelImage": row[3],
+                            "MSRPUSD": row[4],
+                            "MSRPEUR": row[5],
+                        }
+                        logger.info(
+                            f"[{job_run_id}] Warehouse match for EntryID {entry['EntryID']}, ProductModel '{entry['ProductModel']}' (clean: '{product_model_clean}'): {match}"
+                        )
+                        return match
+                    logger.info(
+                        f"[{job_run_id}] No warehouse match for EntryID {entry['EntryID']}, ProductModel '{entry['ProductModel']}' (clean: '{product_model_clean}')"
+                    )
+                    return {}
+            except Exception as e:
+                logger.error(
+                    f"[{job_run_id}] Error searching warehouse for EntryID {entry['EntryID']}, ProductModel '{entry['ProductModel']}': {e}"
+                )
+                return {}
         async def process_single_entry(entry: dict) -> tuple[int, dict]:
             async with entry_processing_semaphore:
                 warehouse_match = await search_warehouse_for_entry(entry)
