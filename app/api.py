@@ -2055,12 +2055,12 @@ async def api_warehouse_batch_query(
                 for entry_id, match in sorted(matching_records.items()):
                     writer.writerow({'EntryID': entry_id, **match})
             csv_save_as = f"job_results/{job_run_id}/{job_run_id}_matching_records.csv"
-            csv_s3_url = await upload_log_file(
-                job_run_id,
-                csv_file_path,
-                logger,
-                db_record_file_id_to_update=file_id,
+            csv_s3_url = await upload_file_to_space(
+                file_src=csv_file_path,
                 save_as=csv_save_as,
+                is_public=True,
+                logger=logger,
+                file_id=job_run_id
             )
             # Update DB with results CSV URL
             if csv_s3_url:
