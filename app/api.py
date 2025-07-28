@@ -1876,6 +1876,148 @@ async def api_reset_step1_status_for_file(file_id: str):
     except ValueError: err_msg=f"Invalid FileID: {file_id}"; logger.error(f"[{job_run_id}] {err_msg}"); await upload_log_file(job_run_id, log_file_path, logger, db_record_file_id_to_update=file_id); raise HTTPException(status_code=400, detail=err_msg)
     except Exception as e_main: logger.critical(f"[{job_run_id}] Critical error resetting Step1: {e_main}", exc_info=True); crit_log_url = await upload_log_file(job_run_id, log_file_path, logger, db_record_file_id_to_update=file_id); raise HTTPException(status_code=500, detail=f"Internal server error. Log: {crit_log_url}")
 
+
+@router.get("/warehouse/batch-query/{file_id}", tags=["Warehouse"])
+async def api_warehouse_batch_query(
+    file_id: str,
+    limit: Optional[int] = Query(
+        1000,
+        ge=1,
+        le=10000,
+        description=f"Max records from {SCRAPER_RECORDS_TABLE_NAME} to process.",
+    ),
+):
+    job_run_id = f"warehouse_batch_query_{file_id}_{uuid.uuid4().hex[:6]}"
+    logger, log_file_path = setup_job_logger(job_id=job_run_id, console_output=True)
+    logger.info(
+        f"[{job_run_id}] API Call: Batch warehouse query for FileID '{file_id}'. Limit: {limit}."
+    )
+
+    try:
+        file_id_int = int(file_id)
+        async with async_engine.connect() as conn:
+            file_exists_q = await conn.execute(
+                text(
+                    f"SELECT 1 FROM {IMAGE_SCRAPER_FILES_TABLE_NAME} WHERE {IMAGE_SCRAPER_FILES_PK_COLUMN} = :fid"
+                ),
+                {"fid": file_id_int},
+            )
+            if not file_exists_q.scalar_one_or_none():
+                logger.error(
+                    f"[{job_run_id}] FileID '{file_id_int}' not found in {IMAGE_SCRAPER_FILES_TABLE_NAME}."
+                )
+                await upload_log_file(
+                    job_run_id,
+                    log_file_path,
+                    logger,
+                    db_record_file_id_to_update=file_id,
+                )
+                raise HTTPException(
+                    status_code=404, detail=f"FileID {file_id_int} not found."
+                )
+
+        # Fetch entries
+        async with async_engine.connect() as conn:
+            fetch_sql = text(
+                f"""
+                SELECT TOP (:limit_val)
+                    r.{SCRAPER_RECORDS_PK_COLUMN} AS EntryID,
+                    r.{SCRAPER_RECORDS_PRODUCT_MODEL_COLUMN} AS ProductModel,
+                    r.{SCRAPER_RECORDS_PRODUCT_BRAND_COLUMN} AS ProductBrand
+                FROM {SCRAPER_RECORDS_TABLE_NAME} r
+                WHERE r.{SCRAPER_RECORDS_FILE_ID_FK_COLUMN} = :fid
+                  AND r.{SCRAPER_RECORDS_PRODUCT_MODEL_COLUMN} IS NOT NULL
+                  AND r.{SCRAPER_RECORDS_PRODUCT_MODEL_COLUMN} <> ''
+                ORDER BY r.{SCRAPER_RECORDS_PK_COLUMN};
+                """
+            )
+            db_res_entries = await conn.execute(
+                fetch_sql, {"fid": file_id_int, "limit_val": limit}
+            )
+            entries_to_process_list = [
+                {
+                    "EntryID": row["EntryID"],
+                    "ProductModel": row["ProductModel"],
+                    "ProductBrand": row["ProductBrand"],
+                }
+                for row in db_res_entries.mappings()
+            ]
+        
+        if not entries_to_process_list:
+            msg = f"[{job_run_id}] No eligible entries found for FileID '{file_id_int}'."
+            logger.info(msg)
+            log_s3_url = await upload_log_file(
+                job_run_id, log_file_path, logger, db_record_file_id_to_update=file_id
+            )
+            return {
+                "status": "no_action_required",
+                "message": msg,
+                "log_url": log_s3_url,
+                "data": {}
+            }
+
+        # Process entries
+        batch_size = 20
+        max_concurrent = 5
+        entry_processing_semaphore = asyncio.Semaphore(max_concurrent)
+        results_data = {}
+
+        async def process_single_entry(entry: dict) -> tuple[int, dict]:
+            async with entry_processing_semaphore:
+                warehouse_match = await search_warehouse_for_entry(entry)
+                return entry["EntryID"], warehouse_match if warehouse_match else None
+
+        batched_entries = [
+            entries_to_process_list[i : i + batch_size]
+            for i in range(0, len(entries_to_process_list), batch_size)
+        ]
+
+        for batch_idx, batch in enumerate(batched_entries, 1):
+            logger.info(f"[{job_run_id}] Processing batch {batch_idx}/{len(batched_entries)} with {len(batch)} entries.")
+            outcomes = await asyncio.gather(
+                *[process_single_entry(entry) for entry in batch],
+                return_exceptions=True,
+            )
+            for outcome in outcomes:
+                if isinstance(outcome, Exception):
+                    logger.error(f"[{job_run_id}] Exception processing entry: {outcome}", exc_info=outcome)
+                elif isinstance(outcome, tuple) and len(outcome) == 2:
+                    entry_id, match = outcome
+                    results_data[entry_id] = match
+                else:
+                    logger.error(f"[{job_run_id}] Unexpected outcome: {outcome}")
+
+        final_message = f"Batch warehouse query for FileID '{file_id}' complete. Processed {len(results_data)} entries."
+        logger.info(f"[{job_run_id}] {final_message}")
+        final_log_s3_url = await upload_log_file(
+            job_run_id, log_file_path, logger, db_record_file_id_to_update=file_id
+        )
+
+        return {
+            "status": "success",
+            "message": final_message,
+            "job_run_id": job_run_id,
+            "data": results_data,
+            "log_url": final_log_s3_url,
+        }
+
+    except HTTPException as http_exc:
+        logger.warning(f"[{job_run_id}] HTTPException: {http_exc.detail}")
+        raise http_exc
+    except Exception as e:
+        logger.critical(
+            f"[{job_run_id}] Critical error in batch warehouse query for FileID '{file_id}': {e}",
+            exc_info=True,
+        )
+        crit_err_log_url = await upload_log_file(
+            job_run_id, log_file_path, logger, db_record_file_id_to_update=file_id
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Critical internal error. Job Run ID: {job_run_id}. Log: {crit_err_log_url or 'Log upload failed.'}",
+        )
+
+
 @router.post("/reset-step1-for-no-results-entries/{file_id}", tags=["Database"])
 async def api_reset_step1_for_no_result_entries(file_id: str, entry_ids_filter: Optional[List[int]] = Query(None)):
     job_run_id = f"reset_step1_no_res_{file_id}_{uuid.uuid4().hex[:6]}"
