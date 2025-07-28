@@ -1897,11 +1897,12 @@ async def api_warehouse_batch_query(
         async with async_engine.connect() as conn:
             file_exists_q = await conn.execute(
                 text(
-                    f"SELECT 1 FROM {IMAGE_SCRAPER_FILES_TABLE_NAME} WHERE {IMAGE_SCRAPER_FILES_PK_COLUMN} = :fid"
+                    f"SELECT 1, email FROM {IMAGE_SCRAPER_FILES_TABLE_NAME} WHERE {IMAGE_SCRAPER_FILES_PK_COLUMN} = :fid"
                 ),
                 {"fid": file_id_int},
             )
-            if not file_exists_q.scalar_one_or_none():
+            row = file_exists_q.fetchone()
+            if not row:
                 logger.error(
                     f"[{job_run_id}] FileID '{file_id_int}' not found in {IMAGE_SCRAPER_FILES_TABLE_NAME}."
                 )
@@ -1914,6 +1915,7 @@ async def api_warehouse_batch_query(
                 raise HTTPException(
                     status_code=404, detail=f"FileID {file_id_int} not found."
                 )
+            email = row[1]
 
         # Fetch entries
         async with async_engine.connect() as conn:
@@ -2039,11 +2041,71 @@ async def api_warehouse_batch_query(
                 else:
                     logger.error(f"[{job_run_id}] Unexpected outcome: {outcome}")
 
-        final_message = f"Batch warehouse query for FileID '{file_id}' complete. Processed {len(results_data)} entries."
+        matching_records = {eid: match for eid, match in results_data.items() if match}
+        csv_s3_url = None
+        csv_file_path = None
+        if matching_records:
+            import csv
+            import os
+            csv_file_path = os.path.join(os.path.dirname(log_file_path), f"{job_run_id}_matching_records.csv")
+            with open(csv_file_path, 'w', newline='') as csvfile:
+                fieldnames = ['EntryID', 'ModelNumber', 'ModelClean', 'ModelFolder', 'ModelImage', 'MSRPUSD', 'MSRPEUR']
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                writer.writeheader()
+                for entry_id, match in sorted(matching_records.items()):
+                    writer.writerow({'EntryID': entry_id, **match})
+            csv_s3_url = await upload_log_file(
+                job_run_id,
+                csv_file_path,
+                logger,
+                db_record_file_id_to_update=file_id,
+            )
+
+        final_message = f"Batch warehouse query for FileID '{file_id}' complete. Processed {len(results_data)} entries. Matching records: {len(matching_records)}."
         logger.info(f"[{job_run_id}] {final_message}")
         final_log_s3_url = await upload_log_file(
             job_run_id, log_file_path, logger, db_record_file_id_to_update=file_id
         )
+
+        if matching_records and email and csv_file_path and csv_s3_url:
+            import smtplib
+            from email.mime.multipart import MIMEMultipart
+            from email.mime.text import MIMEText
+            from email.mime.base import MIMEBase
+            from email import encoders
+            try:
+                subject = f"Warehouse Batch Query Results for FileID {file_id}"
+                body = f"{final_message}\n\nLog URL: {final_log_s3_url}\nCSV URL: {csv_s3_url}"
+                message = MIMEMultipart()
+                message['From'] = 'noreply@yourdomain.com'  # Replace with your sender email
+                message['To'] = email
+                message['Subject'] = subject
+                message.attach(MIMEText(body, 'plain'))
+                with open(csv_file_path, "rb") as attachment:
+                    part = MIMEBase("application", "octet-stream")
+                    part.set_payload(attachment.read())
+                    encoders.encode_base64(part)
+                    part.add_header(
+                        "Content-Disposition",
+                        f"attachment; filename= {os.path.basename(csv_file_path)}",
+                    )
+                    message.attach(part)
+                # Replace with your SMTP details
+                smtp_server = "smtp.yourdomain.com"
+                smtp_port = 587
+                smtp_user = "your_smtp_user"
+                smtp_password = "your_smtp_password"
+                with smtplib.SMTP(smtp_server, smtp_port) as server:
+                    server.starttls()
+                    server.login(smtp_user, smtp_password)
+                    server.sendmail(message['From'], email, message.as_string())
+                logger.info(f"[{job_run_id}] Email sent to {email} with CSV attachment.")
+            except Exception as e:
+                logger.error(f"[{job_run_id}] Failed to send email to {email}: {e}")
+
+        # Clean up local CSV file if exists
+        if csv_file_path and os.path.exists(csv_file_path):
+            os.unlink(csv_file_path)
 
         return {
             "status": "success",
@@ -2051,6 +2113,7 @@ async def api_warehouse_batch_query(
             "job_run_id": job_run_id,
             "data": results_data,
             "log_url": final_log_s3_url,
+            "csv_url": csv_s3_url,
         }
 
     except HTTPException as http_exc:
