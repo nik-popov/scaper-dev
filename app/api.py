@@ -1876,7 +1876,6 @@ async def api_reset_step1_status_for_file(file_id: str):
     except ValueError: err_msg=f"Invalid FileID: {file_id}"; logger.error(f"[{job_run_id}] {err_msg}"); await upload_log_file(job_run_id, log_file_path, logger, db_record_file_id_to_update=file_id); raise HTTPException(status_code=400, detail=err_msg)
     except Exception as e_main: logger.critical(f"[{job_run_id}] Critical error resetting Step1: {e_main}", exc_info=True); crit_log_url = await upload_log_file(job_run_id, log_file_path, logger, db_record_file_id_to_update=file_id); raise HTTPException(status_code=500, detail=f"Internal server error. Log: {crit_log_url}")
 
-
 @router.get("/warehouse/batch-query/{file_id}", tags=["Warehouse"])
 async def api_warehouse_batch_query(
     file_id: str,
@@ -1965,6 +1964,17 @@ async def api_warehouse_batch_query(
         async def process_single_entry(entry: dict) -> tuple[int, dict]:
             async with entry_processing_semaphore:
                 warehouse_match = await search_warehouse_for_entry(entry)
+                # If you need to enqueue any DB update (e.g., status), use enqueue_db_update here
+                # For example:
+                # if warehouse_match:
+                #     await enqueue_db_update(
+                #         file_id=job_run_id,
+                #         sql="UPDATE ... SET status = ... WHERE EntryID = :eid",
+                #         params={"eid": entry["EntryID"]},
+                #         task_type="update_warehouse_status",
+                #         correlation_id=str(uuid.uuid4()),
+                #         logger_param=logger,
+                #     )
                 return entry["EntryID"], warehouse_match if warehouse_match else None
 
         batched_entries = [
@@ -2016,7 +2026,6 @@ async def api_warehouse_batch_query(
             status_code=500,
             detail=f"Critical internal error. Job Run ID: {job_run_id}. Log: {crit_err_log_url or 'Log upload failed.'}",
         )
-
 
 @router.post("/reset-step1-for-no-results-entries/{file_id}", tags=["Database"])
 async def api_reset_step1_for_no_result_entries(file_id: str, entry_ids_filter: Optional[List[int]] = Query(None)):
