@@ -1896,14 +1896,16 @@ async def api_warehouse_batch_query(
 
     try:
         file_id_int = int(file_id)
+        user_email_from_db = None
         async with async_engine.connect() as conn:
-            file_exists_q = await conn.execute(
+            file_info_q = await conn.execute(
                 text(
-                    f"SELECT 1 FROM {IMAGE_SCRAPER_FILES_TABLE_NAME} WHERE {IMAGE_SCRAPER_FILES_PK_COLUMN} = :fid"
+                    f"SELECT UserEmail FROM {IMAGE_SCRAPER_FILES_TABLE_NAME} WHERE {IMAGE_SCRAPER_FILES_PK_COLUMN} = :fid"
                 ),
                 {"fid": file_id_int},
             )
-            if not file_exists_q.scalar_one_or_none():
+            file_info_result = file_info_q.fetchone()
+            if not file_info_result:
                 logger.error(
                     f"[{job_run_id}] FileID '{file_id_int}' not found in {IMAGE_SCRAPER_FILES_TABLE_NAME}."
                 )
@@ -1916,6 +1918,8 @@ async def api_warehouse_batch_query(
                 raise HTTPException(
                     status_code=404, detail=f"FileID {file_id_int} not found."
                 )
+            user_email_from_db = file_info_result[0] if file_info_result[0] else None
+            logger.info(f"[{job_run_id}] Retrieved UserEmail from database: {user_email_from_db}")
 
         # Fetch entries
         async with async_engine.connect() as conn:
@@ -2080,32 +2084,34 @@ async def api_warehouse_batch_query(
             job_run_id, log_file_path, logger, db_record_file_id_to_update=file_id
         )
 
-        logger.info(f"[{job_run_id}] Email sending check - email: {email}, csv_s3_url: {csv_s3_url}")
+        final_email = user_email_from_db or email
         
-        if email and csv_s3_url:
-            logger.info(f"[{job_run_id}] Email conditions met. Attempting to send comprehensive email to {email}")
+        logger.info(f"[{job_run_id}] Email sending check - final_email: {final_email} (from DB: {user_email_from_db}, from query: {email}), csv_s3_url: {csv_s3_url}")
+        
+        if final_email and csv_s3_url:
+            logger.info(f"[{job_run_id}] Email conditions met. Attempting to send comprehensive email to {final_email}")
             try:
                 subject = f"Warehouse Batch Query Results - FileID {file_id}"
                 await send_email(
-                    to_emails=email, 
+                    to_emails=final_email, 
                     subject=subject, 
                     download_url=csv_s3_url, 
                     job_id=job_run_id, 
                     logger=logger
                 )
-                logger.info(f"[{job_run_id}] Comprehensive email sent to {email} with CSV URL and job details.")
+                logger.info(f"[{job_run_id}] Comprehensive email sent to {final_email} with CSV URL and job details.")
             except Exception as e:
-                logger.error(f"[{job_run_id}] Failed to send email to {email}: {e}")
+                logger.error(f"[{job_run_id}] Failed to send email to {final_email}: {e}")
                 try:
                     fallback_subject = f"Warehouse Batch Query Results for FileID {file_id}"
                     fallback_body = f"{final_message}\n\nLog URL: {final_log_s3_url}\nCSV URL: {csv_s3_url}"
-                    await send_message_email(to_emails=email, subject=fallback_subject, message=fallback_body, logger=logger)
-                    logger.info(f"[{job_run_id}] Fallback email sent to {email}.")
+                    await send_message_email(to_emails=final_email, subject=fallback_subject, message=fallback_body, logger=logger)
+                    logger.info(f"[{job_run_id}] Fallback email sent to {final_email}.")
                 except Exception as fallback_e:
-                    logger.error(f"[{job_run_id}] Failed to send fallback email to {email}: {fallback_e}")
+                    logger.error(f"[{job_run_id}] Failed to send fallback email to {final_email}: {fallback_e}")
         else:
-            if not email:
-                logger.warning(f"[{job_run_id}] Email not sent - no email address provided")
+            if not final_email:
+                logger.warning(f"[{job_run_id}] Email not sent - no email address available (DB: {user_email_from_db}, query: {email})")
             if not csv_s3_url:
                 logger.warning(f"[{job_run_id}] Email not sent - no CSV URL available")
             logger.info(f"[{job_run_id}] Email sending skipped due to missing conditions")
