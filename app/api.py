@@ -91,7 +91,9 @@ WAREHOUSE_IMAGES_MODEL_NUMBER_COLUMN = "ModelNumber"
 WAREHOUSE_IMAGES_MODEL_CLEAN_COLUMN = "ModelClean"
 WAREHOUSE_IMAGES_MODEL_FOLDER_COLUMN = "ModelFolder"
 WAREHOUSE_IMAGES_MODEL_SOURCE_COLUMN = "ModelSource"
-
+WAREHOUSE_IMAGES_MODEL_IMAGE_COLUMN = "ModelImage"
+WAREHOUSE_IMAGES_MSRP_USD_COLUMN = "MSRPUSD"
+WAREHOUSE_IMAGES_MSRP_EUR_COLUMN = "MSRPEUR"
 IMAGE_SCRAPER_FILES_TABLE_NAME = "utb_ImageScraperFiles"
 IMAGE_SCRAPER_FILES_PK_COLUMN = "ID"
 IMAGE_SCRAPER_FILES_IMAGE_COMPLETE_TIME_COLUMN = "ImageCompleteTime"
@@ -1248,7 +1250,7 @@ async def api_populate_results_from_warehouse(
             product_model_clean = extract_starting_alphanum(entry["ProductModel"])
             query = text(
                 f"""
-                SELECT {WAREHOUSE_IMAGES_MODEL_NUMBER_COLUMN}, {WAREHOUSE_IMAGES_MODEL_CLEAN_COLUMN}, {WAREHOUSE_IMAGES_MODEL_FOLDER_COLUMN}
+                SELECT {WAREHOUSE_IMAGES_MODEL_NUMBER_COLUMN}, {WAREHOUSE_IMAGES_MODEL_CLEAN_COLUMN}, {WAREHOUSE_IMAGES_MODEL_FOLDER_COLUMN}, {WAREHOUSE_IMAGES_MODEL_IMAGE_COLUMN}, {WAREHOUSE_IMAGES_MSRP_USD_COLUMN}, {WAREHOUSE_IMAGES_MSRP_EUR_COLUMN}
                 FROM {WAREHOUSE_IMAGES_TABLE_NAME}
                 WHERE {WAREHOUSE_IMAGES_MODEL_CLEAN_COLUMN} = :product_model_clean
             """
@@ -1264,6 +1266,9 @@ async def api_populate_results_from_warehouse(
                             "ModelNumber": row[0],
                             "ModelClean": row[1],
                             "ModelFolder": row[2],
+                            "ModelImage": row[3],
+                            "MSRPUSD": row[4],
+                            "MSRPEUR": row[5],
                         }
                         logger.info(
                             f"[{job_run_id}] Warehouse match for EntryID {entry['EntryID']}, ProductModel '{entry['ProductModel']}' (clean: '{product_model_clean}'): {match}"
@@ -1395,13 +1400,9 @@ async def api_populate_results_from_warehouse(
                         # Prepare result for insertion
                         model_clean = warehouse_match["ModelClean"]
                         model_folder = warehouse_match["ModelFolder"]
-                        model_url_part = model_clean
-                        for ext in [".png", ".jpg", ".jpeg", ".webp"]:
-                            if model_url_part.lower().endswith(ext):
-                                model_url_part = model_url_part[: -len(ext)]
-                                break
-                        img_url = f"{base_image_url.rstrip('/')}/{model_folder.strip('/')}/{model_url_part}.png"
-                        desc = f"{entry.get('ProductBrand', 'Brand')} {warehouse_match.get('ModelNumber', entry.get('ProductModel', 'Product'))}"
+                        model_image = warehouse_match["ModelImage"]
+                        img_url = f"{base_image_url.rstrip('/')}/{model_folder.strip('/')}/{model_image}"
+                        desc = f"{entry.get('ProductBrand', 'Brand')} {warehouse_match.get('ModelNumber', entry.get('ProductModel', 'Product'))} - MSRP USD: {warehouse_match.get('MSRPUSD', 'N/A')}, EUR: {warehouse_match.get('MSRPEUR', 'N/A')}"
                         source_domain = (
                             urlparse(base_image_url).netloc or "warehouse.internal"
                         )
@@ -1641,6 +1642,44 @@ async def api_test_insert_search_results(
         crit_err_log_url = await upload_log_file(job_run_id, log_file_path, logger, db_record_file_id_to_update=file_id)
         raise HTTPException(status_code=500, detail=f"Internal server error. Job Run ID: {job_run_id}. Log: {crit_err_log_url or 'Log upload failed.'}")
 
+
+@router.get("/warehouse/query", tags=["Warehouse"])
+async def api_warehouse_query(model: str = Query(..., description="The model number to query in the warehouse.")):
+    job_run_id = f"warehouse_query_{uuid.uuid4().hex[:6]}"
+    logger, log_file_path = setup_job_logger(job_id=job_run_id, console_output=True)
+    logger.info(f"[{job_run_id}] API Call: Warehouse query for model: '{model}'")
+    try:
+        cleaned_model = extract_starting_alphanum(model)
+        logger.debug(f"[{job_run_id}] Cleaned model: '{cleaned_model}'")
+        query_sql = text(
+            f"""
+            SELECT {WAREHOUSE_IMAGES_MODEL_IMAGE_COLUMN}, {WAREHOUSE_IMAGES_MODEL_FOLDER_COLUMN}, {WAREHOUSE_IMAGES_MSRP_USD_COLUMN}, {WAREHOUSE_IMAGES_MSRP_EUR_COLUMN}, {WAREHOUSE_IMAGES_MODEL_CLEAN_COLUMN}
+            FROM {WAREHOUSE_IMAGES_TABLE_NAME}
+            WHERE {WAREHOUSE_IMAGES_MODEL_CLEAN_COLUMN} = :cleaned_model
+        """
+        )
+        async with async_engine.connect() as conn:
+            result = await conn.execute(query_sql, {"cleaned_model": cleaned_model})
+            row = result.fetchone()
+            if row:
+                response_data = {
+                    "ModelImage": row[0],
+                    "ModelFolder": row[1],
+                    "MSRPUSD": row[2],
+                    "MSRPEUR": row[3],
+                    "ModelClean": row[4]
+                }
+                logger.info(f"[{job_run_id}] Found matching warehouse data: {response_data}")
+                return {"status": "success", "data": response_data}
+            else:
+                logger.info(f"[{job_run_id}] No matching model found in warehouse.")
+                raise HTTPException(status_code=404, detail="No matching model found in warehouse")
+    except HTTPException as http_exc:
+        raise http_exc
+    except Exception as e:
+        logger.error(f"[{job_run_id}] Error querying warehouse: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error during warehouse query")
+    
 @router.get("/get-send-to-email/{file_id}", tags=["Database"])
 async def api_get_send_to_email_address(file_id: str):
     job_run_id = f"get_email_{file_id}"
