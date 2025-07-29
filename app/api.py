@@ -2272,8 +2272,29 @@ async def api_warehouse_batch_query_and_populate(
                 
                 try:
                     # Prepare result for insertion into utb_ImageScraperResult
-                    model_folder = warehouse_match["ModelFolder"]
-                    model_image = warehouse_match["ModelImage"]
+                    model_folder = warehouse_match.get("ModelFolder")
+                    model_image = warehouse_match.get("ModelImage")
+                    
+                    if not model_folder or not model_image:
+                        logger.warning(f"[{job_run_id}] EntryID {entry['EntryID']}: Missing ModelFolder ({model_folder}) or ModelImage ({model_image}), skipping image insertion")
+                        # Still process MSRP update but skip image insertion
+                        msrp_value = warehouse_match.get("MSRPUSD") if currency == "USD" else warehouse_match.get("MSRPEUR")
+                        if msrp_value is not None:
+                            msrp_value_float = float(msrp_value) if hasattr(msrp_value, '__float__') else msrp_value
+                            msrp_update_sql = f"UPDATE {SCRAPER_RECORDS_TABLE_NAME} SET {SCRAPER_RECORDS_PRODUCT_MSRP_COLUMN} = :msrp_value WHERE {SCRAPER_RECORDS_PK_COLUMN} = :entry_id"
+                            await enqueue_db_update(
+                                file_id=job_run_id,
+                                sql=msrp_update_sql,
+                                params={"msrp_value": msrp_value_float, "entry_id": entry["EntryID"]},
+                                task_type=f"update_msrp_{currency.lower()}_entry_{entry['EntryID']}",
+                                correlation_id=str(uuid.uuid4()),
+                                logger_param=logger,
+                            )
+                            counters["num_msrp_updates_enqueued"] += 1
+                            logger.info(f"[{job_run_id}] Enqueued MSRP update for EntryID {entry['EntryID']}: {currency} = {msrp_value_float}")
+                        counters["num_warehouse_matches"] += 1
+                        return entry["EntryID"], True
+                    
                     img_url = f"{base_image_url.rstrip('/')}/{model_folder.strip('/')}/{model_image}"
                     desc = f"{entry.get('ProductBrand', 'Brand')} {warehouse_match.get('ModelNumber', entry.get('ProductModel', 'Product'))} - MSRP USD: {warehouse_match.get('MSRPUSD', 'N/A')}, EUR: {warehouse_match.get('MSRPEUR', 'N/A')}"
                     source_domain = urlparse(base_image_url).netloc or "warehouse.internal"
