@@ -69,6 +69,7 @@ SCRAPER_RECORDS_ENTRY_STATUS_COLUMN = "EntryStatus"
 SCRAPER_RECORDS_WAREHOUSE_MATCH_TIME_COLUMN = "WarehouseMatchTime"
 SCRAPER_RECORDS_PRODUCT_COLOR_COLUMN = "ProductColor"
 SCRAPER_RECORDS_PRODUCT_CATEGORY_COLUMN = "ProductCategory"
+SCRAPER_RECORDS_PRODUCT_MSRP_COLUMN = "ProductMSRP"
 
 
 IMAGE_SCRAPER_RESULT_TABLE_NAME = "utb_ImageScraperResult"
@@ -2144,6 +2145,244 @@ async def api_warehouse_batch_query(
             status_code=500,
             detail=f"Critical internal error. Job Run ID: {job_run_id}. Log: {crit_err_log_url or 'Log upload failed.'}",
         )
+
+@router.post("/warehouse/batch-query-and-populate/{file_id}", tags=["Warehouse"])
+async def api_warehouse_batch_query_and_populate(
+    file_id: str,
+    limit: int = Query(100, ge=1, le=1000),
+    currency: str = Query(..., regex="^(USD|EUR)$"),
+    email: Optional[str] = Query(None)
+):
+    """
+    Merged endpoint that combines warehouse batch query (data retrieval) and 
+    populate results from warehouse (data placement) functionality.
+    
+    - Retrieves entries from utb_ImageScraperRecords
+    - Searches warehouse for matches
+    - Updates productmsrp column based on currency selection (USD/EUR)
+    - Inserts images into utb_ImageScraperResult with SortOrder=1
+    - Uses hardcoded base image URL: https://cms.rtsplusdev.com/files/icon_warehouse_images
+    """
+    job_run_id = f"warehouse_batch_query_populate_{file_id}_{uuid.uuid4().hex[:6]}"
+    logger, log_file_path = setup_job_logger(job_id=job_run_id, console_output=True)
+    logger.info(f"[{job_run_id}] API Call: Warehouse batch query and populate for FileID: {file_id}, Limit: {limit}, Currency: {currency}, Email: {email or 'None'}")
+    
+    try:
+        file_id_int = int(file_id)
+        
+        # Validate FileID exists and get user email
+        user_email_from_db = None
+        async with async_engine.connect() as conn:
+            file_info_q = text(f"SELECT UserEmail FROM {IMAGE_SCRAPER_FILES_TABLE_NAME} WHERE {IMAGE_SCRAPER_FILES_PK_COLUMN} = :fid")
+            file_info_result = (await conn.execute(file_info_q, {"fid": file_id_int})).fetchone()
+            if not file_info_result:
+                logger.error(f"[{job_run_id}] FileID '{file_id_int}' not found in {IMAGE_SCRAPER_FILES_TABLE_NAME}.")
+                await upload_log_file(job_run_id, log_file_path, logger, db_record_file_id_to_update=file_id)
+                raise HTTPException(status_code=404, detail=f"FileID {file_id_int} not found.")
+            user_email_from_db = file_info_result[0] if file_info_result[0] else None
+            logger.info(f"[{job_run_id}] Retrieved UserEmail from database: {user_email_from_db}")
+
+        # Fetch entries from utb_ImageScraperRecords
+        async with async_engine.connect() as conn:
+            fetch_sql = text(
+                f"""
+                SELECT TOP (:limit_val)
+                    r.{SCRAPER_RECORDS_PK_COLUMN} AS EntryID,
+                    r.{SCRAPER_RECORDS_PRODUCT_MODEL_COLUMN} AS ProductModel,
+                    r.{SCRAPER_RECORDS_PRODUCT_BRAND_COLUMN} AS ProductBrand
+                FROM {SCRAPER_RECORDS_TABLE_NAME} r
+                WHERE r.{SCRAPER_RECORDS_FILE_ID_FK_COLUMN} = :fid
+                  AND r.{SCRAPER_RECORDS_PRODUCT_MODEL_COLUMN} IS NOT NULL
+                  AND r.{SCRAPER_RECORDS_PRODUCT_MODEL_COLUMN} <> ''
+                ORDER BY r.{SCRAPER_RECORDS_PK_COLUMN};
+                """
+            )
+            db_res_entries = await conn.execute(
+                fetch_sql, {"fid": file_id_int, "limit_val": limit}
+            )
+            entries_to_process_list = [
+                {
+                    "EntryID": row["EntryID"],
+                    "ProductModel": row["ProductModel"],
+                    "ProductBrand": row["ProductBrand"],
+                }
+                for row in db_res_entries.mappings()
+            ]
+        
+        if not entries_to_process_list:
+            msg = f"No eligible entries found for FileID '{file_id_int}'."
+            logger.info(f"[{job_run_id}] {msg}")
+            log_s3_url = await upload_log_file(job_run_id, log_file_path, logger, db_record_file_id_to_update=file_id)
+            return {
+                "status": "no_action_required",
+                "message": msg,
+                "log_url": log_s3_url,
+                "data": {}
+            }
+
+        logger.info(f"[{job_run_id}] Found {len(entries_to_process_list)} entries to process")
+
+        base_image_url = "https://cms.rtsplusdev.com/files/icon_warehouse_images"
+        batch_size = 20
+        max_concurrent = 5
+        entry_processing_semaphore = asyncio.Semaphore(max_concurrent)
+        
+        results_data = {}
+        results_to_insert = []
+        processed_entry_ids = []
+        counters = {
+            "num_warehouse_matches": 0,
+            "num_no_matches": 0,
+            "num_processing_errors": 0,
+            "num_status_updates_enqueued": 0,
+            "num_msrp_updates_enqueued": 0
+        }
+
+        async def search_warehouse_for_entry(entry: dict) -> dict:
+            if not entry or not entry.get("ProductModel"):
+                logger.warning(f"[{job_run_id}] No valid entry or ProductModel for EntryID {entry.get('EntryID', 'UNKNOWN')}")
+                return {}
+            product_model_clean = extract_starting_alphanum(entry["ProductModel"])
+            query = text(
+                f"""
+                SELECT {WAREHOUSE_IMAGES_MODEL_NUMBER_COLUMN}, {WAREHOUSE_IMAGES_MODEL_CLEAN_COLUMN}, {WAREHOUSE_IMAGES_MODEL_FOLDER_COLUMN}, {WAREHOUSE_IMAGES_MODEL_IMAGE_COLUMN}, {WAREHOUSE_IMAGES_MSRP_USD_COLUMN}, {WAREHOUSE_IMAGES_MSRP_EUR_COLUMN}
+                FROM {WAREHOUSE_IMAGES_TABLE_NAME}
+                WHERE {WAREHOUSE_IMAGES_MODEL_CLEAN_COLUMN} = :product_model_clean
+            """
+            )
+            try:
+                async with async_engine.connect() as conn:
+                    result = await conn.execute(query, {"product_model_clean": product_model_clean})
+                    row = result.fetchone()
+                    if row:
+                        match = {
+                            "ModelNumber": row[0],
+                            "ModelClean": row[1],
+                            "ModelFolder": row[2],
+                            "ModelImage": row[3],
+                            "MSRPUSD": row[4],
+                            "MSRPEUR": row[5],
+                        }
+                        logger.info(f"[{job_run_id}] Warehouse match for EntryID {entry['EntryID']}, ProductModel '{entry['ProductModel']}' (clean: '{product_model_clean}'): {match}")
+                        return match
+                    logger.info(f"[{job_run_id}] No warehouse match for EntryID {entry['EntryID']}, ProductModel '{entry['ProductModel']}' (clean: '{product_model_clean}')")
+                    return {}
+            except Exception as e:
+                logger.error(f"[{job_run_id}] Error searching warehouse for EntryID {entry['EntryID']}, ProductModel '{entry['ProductModel']}': {e}")
+                return {}
+
+        async def process_single_entry(entry: dict) -> tuple[int, bool]:
+            async with entry_processing_semaphore:
+                warehouse_match = await search_warehouse_for_entry(entry)
+                
+                if not warehouse_match:
+                    counters["num_no_matches"] += 1
+                    return entry["EntryID"], False
+                
+                try:
+                    # Prepare result for insertion into utb_ImageScraperResult
+                    model_folder = warehouse_match["ModelFolder"]
+                    model_image = warehouse_match["ModelImage"]
+                    img_url = f"{base_image_url.rstrip('/')}/{model_folder.strip('/')}/{model_image}"
+                    desc = f"{entry.get('ProductBrand', 'Brand')} {warehouse_match.get('ModelNumber', entry.get('ProductModel', 'Product'))} - MSRP USD: {warehouse_match.get('MSRPUSD', 'N/A')}, EUR: {warehouse_match.get('MSRPEUR', 'N/A')}"
+                    source_domain = urlparse(base_image_url).netloc or "warehouse.internal"
+
+                    result_payload = {
+                        IMAGE_SCRAPER_RESULT_ENTRY_ID_FK_COLUMN: entry["EntryID"],
+                        IMAGE_SCRAPER_RESULT_IMAGE_URL_COLUMN: img_url,
+                        IMAGE_SCRAPER_RESULT_IMAGE_DESC_COLUMN: desc,
+                        IMAGE_SCRAPER_RESULT_IMAGE_SOURCE_COLUMN: source_domain,
+                        IMAGE_SCRAPER_RESULT_IMAGE_URL_THUMBNAIL_COLUMN: img_url,
+                        IMAGE_SCRAPER_RESULT_SORT_ORDER_COLUMN: 1,
+                        IMAGE_SCRAPER_RESULT_SOURCE_TYPE_COLUMN: "Warehouse",
+                    }
+
+                    results_to_insert.append(result_payload)
+                    processed_entry_ids.append(entry["EntryID"])
+                    
+                    msrp_value = warehouse_match.get("MSRPUSD") if currency == "USD" else warehouse_match.get("MSRPEUR")
+                    if msrp_value is not None:
+                        msrp_update_sql = f"UPDATE {SCRAPER_RECORDS_TABLE_NAME} SET {SCRAPER_RECORDS_PRODUCT_MSRP_COLUMN} = :msrp_value WHERE {SCRAPER_RECORDS_PK_COLUMN} = :entry_id"
+                        await enqueue_db_update(
+                            file_id=job_run_id,
+                            sql=msrp_update_sql,
+                            params={"msrp_value": msrp_value, "entry_id": entry["EntryID"]},
+                            task_type=f"update_msrp_{currency.lower()}_entry_{entry['EntryID']}",
+                            correlation_id=str(uuid.uuid4()),
+                            logger_param=logger,
+                        )
+                        counters["num_msrp_updates_enqueued"] += 1
+                        logger.info(f"[{job_run_id}] Enqueued MSRP update for EntryID {entry['EntryID']}: {currency} = {msrp_value}")
+                    
+                    counters["num_warehouse_matches"] += 1
+                    return entry["EntryID"], True
+
+                except Exception as e:
+                    logger.error(f"[{job_run_id}] EntryID {entry['EntryID']}: Error processing warehouse match: {e}", exc_info=True)
+                    counters["num_processing_errors"] += 1
+                    return entry["EntryID"], False
+
+        # Process entries in batches
+        for batch_start in range(0, len(entries_to_process_list), batch_size):
+            batch_end = min(batch_start + batch_size, len(entries_to_process_list))
+            batch_entries = entries_to_process_list[batch_start:batch_end]
+            logger.info(f"[{job_run_id}] Processing batch {batch_start//batch_size + 1}: entries {batch_start+1}-{batch_end}")
+            
+            batch_results = await asyncio.gather(
+                *[process_single_entry(entry) for entry in batch_entries],
+                return_exceptions=True
+            )
+            
+            for result in batch_results:
+                if isinstance(result, Exception):
+                    logger.error(f"[{job_run_id}] Exception in batch processing: {result}", exc_info=result)
+                    counters["num_processing_errors"] += 1
+                elif isinstance(result, tuple) and len(result) == 2:
+                    entry_id, success = result
+                    results_data[entry_id] = {"success": success}
+
+        if results_to_insert:
+            logger.info(f"[{job_run_id}] Inserting {len(results_to_insert)} results into {IMAGE_SCRAPER_RESULT_TABLE_NAME}")
+            try:
+                await insert_search_results(results_to_insert, logger)
+                logger.info(f"[{job_run_id}] Successfully inserted {len(results_to_insert)} warehouse results")
+            except Exception as e:
+                logger.error(f"[{job_run_id}] Error inserting results: {e}", exc_info=True)
+                raise HTTPException(status_code=500, detail=f"Error inserting results: {e}")
+
+        # Prepare summary
+        summary_msg = (
+            f"Warehouse batch query and populate completed for FileID {file_id}. "
+            f"Processed: {len(entries_to_process_list)}, "
+            f"Matches: {counters['num_warehouse_matches']}, "
+            f"No matches: {counters['num_no_matches']}, "
+            f"Errors: {counters['num_processing_errors']}, "
+            f"MSRP updates ({currency}): {counters['num_msrp_updates_enqueued']}"
+        )
+        logger.info(f"[{job_run_id}] {summary_msg}")
+
+        final_log_url = await upload_log_file(job_run_id, log_file_path, logger, db_record_file_id_to_update=file_id)
+        
+        return {
+            "status": "completed",
+            "message": summary_msg,
+            "job_run_id": job_run_id,
+            "currency_used": currency,
+            "counters": counters,
+            "processed_entries": len(entries_to_process_list),
+            "log_url": final_log_url,
+            "data": results_data
+        }
+        
+    except ValueError:
+        err_msg = f"Invalid FileID: {file_id}"
+        logger.error(f"[{job_run_id}] {err_msg}")
+        await upload_log_file(job_run_id, log_file_path, logger, db_record_file_id_to_update=file_id)
+        raise HTTPException(status_code=400, detail=err_msg)
+    except Exception as e:
+        logger.critical(f"[{job_run_id}] Critical error in warehouse batch query and populate: {e}", exc_info=True)
+        crit_log_url = await upload_log_file(job_run_id, log_file_path, logger, db_record_file_id_to_update=file_id)
+        raise HTTPException(status_code=500, detail=f"Internal server error. Log: {crit_log_url}")
 
 @router.post("/reset-step1-for-no-results-entries/{file_id}", tags=["Database"])
 async def api_reset_step1_for_no_result_entries(file_id: str, entry_ids_filter: Optional[List[int]] = Query(None)):
