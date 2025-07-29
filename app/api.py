@@ -2067,17 +2067,8 @@ async def api_warehouse_batch_query(
                 logger=logger,
                 file_id=job_run_id
             )
-            # Update DB with results CSV URL
             if csv_s3_url:
-                await enqueue_db_update(
-                    file_id=job_run_id,
-                    sql=f"UPDATE {IMAGE_SCRAPER_FILES_TABLE_NAME} SET WarehouseResultsCSV = :csv_url WHERE {IMAGE_SCRAPER_FILES_PK_COLUMN} = :fid",
-                    params={"csv_url": csv_s3_url, "fid": file_id_int},
-                    task_type="update_warehouse_results_csv",
-                    correlation_id=str(uuid.uuid4()),
-                    logger_param=logger,
-                )
-                logger.info(f"[{job_run_id}] Enqueued DB update for WarehouseResultsCSV in FileID {file_id_int}.")
+                logger.info(f"[{job_run_id}] Warehouse results CSV uploaded to: {csv_s3_url}")
 
         final_message = f"Batch warehouse query for FileID '{file_id}' complete. Processed {len(results_data)} entries. Matching records: {len(matching_records)}."
         logger.info(f"[{job_run_id}] {final_message}")
@@ -2149,9 +2140,8 @@ async def api_warehouse_batch_query(
 @router.post("/warehouse/batch-query-and-populate/{file_id}", tags=["Warehouse"])
 async def api_warehouse_batch_query_and_populate(
     file_id: str,
-    limit: int = Query(100, ge=1, le=1000),
-    currency: str = Query(..., regex="^(USD|EUR)$"),
-    email: Optional[str] = Query(None)
+    limit: int = Query(5000, ge=1, le=10000),
+    currency: str = Query(..., regex="^(USD|EUR)$", description="Currency selection: USD or EUR")
 ):
     """
     Merged endpoint that combines warehouse batch query (data retrieval) and 
@@ -2159,13 +2149,14 @@ async def api_warehouse_batch_query_and_populate(
     
     - Retrieves entries from utb_ImageScraperRecords
     - Searches warehouse for matches
-    - Updates productmsrp column based on currency selection (USD/EUR)
+    - Updates productmsrp column based on currency selection (USD/EUR dropdown)
     - Inserts images into utb_ImageScraperResult with SortOrder=1
     - Uses hardcoded base image URL: https://cms.rtsplusdev.com/files/icon_warehouse_images
+    - Email is automatically retrieved from job details (UserEmail column)
     """
     job_run_id = f"warehouse_batch_query_populate_{file_id}_{uuid.uuid4().hex[:6]}"
     logger, log_file_path = setup_job_logger(job_id=job_run_id, console_output=True)
-    logger.info(f"[{job_run_id}] API Call: Warehouse batch query and populate for FileID: {file_id}, Limit: {limit}, Currency: {currency}, Email: {email or 'None'}")
+    logger.info(f"[{job_run_id}] API Call: Warehouse batch query and populate for FileID: {file_id}, Limit: {limit}, Currency: {currency}")
     
     try:
         file_id_int = int(file_id)
@@ -2302,17 +2293,18 @@ async def api_warehouse_batch_query_and_populate(
                     
                     msrp_value = warehouse_match.get("MSRPUSD") if currency == "USD" else warehouse_match.get("MSRPEUR")
                     if msrp_value is not None:
+                        msrp_value_float = float(msrp_value) if hasattr(msrp_value, '__float__') else msrp_value
                         msrp_update_sql = f"UPDATE {SCRAPER_RECORDS_TABLE_NAME} SET {SCRAPER_RECORDS_PRODUCT_MSRP_COLUMN} = :msrp_value WHERE {SCRAPER_RECORDS_PK_COLUMN} = :entry_id"
                         await enqueue_db_update(
                             file_id=job_run_id,
                             sql=msrp_update_sql,
-                            params={"msrp_value": msrp_value, "entry_id": entry["EntryID"]},
+                            params={"msrp_value": msrp_value_float, "entry_id": entry["EntryID"]},
                             task_type=f"update_msrp_{currency.lower()}_entry_{entry['EntryID']}",
                             correlation_id=str(uuid.uuid4()),
                             logger_param=logger,
                         )
                         counters["num_msrp_updates_enqueued"] += 1
-                        logger.info(f"[{job_run_id}] Enqueued MSRP update for EntryID {entry['EntryID']}: {currency} = {msrp_value}")
+                        logger.info(f"[{job_run_id}] Enqueued MSRP update for EntryID {entry['EntryID']}: {currency} = {msrp_value_float}")
                     
                     counters["num_warehouse_matches"] += 1
                     return entry["EntryID"], True

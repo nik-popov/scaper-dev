@@ -10,6 +10,8 @@ import aiormq.exceptions
 def datetime_converter(o: Any) -> str:
     if isinstance(o, datetime.datetime) or isinstance(o, datetime.date):
         return o.isoformat()
+    if hasattr(o, '__float__'):
+        return float(o)
     raise TypeError(f"Object of type {o.__class__.__name__} is not JSON serializable")
 logger = logging.getLogger(__name__)
 
