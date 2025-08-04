@@ -26,6 +26,12 @@ SEARCH_PROXY_API_URL = config['dataproxy_settings']['api_url']
 ROAMINGPROXY_API_KEY = config['roamingproxy_settings']['api_key']
 ROAMINGPROXY_API_URL = config['roamingproxy_settings']['api_url']
 PROXY_STRATEGY = config.get('proxy_strategy', 'round_robin')
+PROXY_REGIONS = config.get('proxy_regions', [
+    'northamerica-northeast',
+    'us-east',
+    'us-central',
+    'us-west',
+])
 BRAND_RULES_URL = config['brand_settings']['brand_rules_url']
 AWS_ACCESS_KEY_ID = config['aws_settings']['access_key_id']
 AWS_SECRET_ACCESS_KEY = config['aws_settings']['secret_access_key']

@@ -38,8 +38,16 @@ from tenacity import (RetryError, before_sleep_log, retry,
 from ai_utils import batch_vision_reason
 from common import (fetch_brand_rules, generate_search_variations,
                     preprocess_sku)
-from config import (BRAND_RULES_URL, DATAPROXY_API_KEY, RABBITMQ_URL,ROAMINGPROXY_API_URL, ROAMINGPROXY_API_KEY,
-                    SEARCH_PROXY_API_URL) # VERSION removed, will define locally
+from config import (
+    BRAND_RULES_URL,
+    DATAPROXY_API_KEY,
+    RABBITMQ_URL,
+    ROAMINGPROXY_API_URL,
+    ROAMINGPROXY_API_KEY,
+    SEARCH_PROXY_API_URL,
+    PROXY_STRATEGY,
+    PROXY_REGIONS,
+)  # VERSION removed, will define locally
 from database_config import async_engine
 from db_utils import (enqueue_db_update, fetch_last_valid_entry,
                       get_images_excel_db, get_send_to_email,
@@ -216,7 +224,13 @@ class ProxyType(Enum):
     ROAMINGPROXY = "roamingproxy"
 
 class SearchClient:
-    def __init__(self, logger: logging.Logger, max_concurrency: int = 10, proxy_strategy: str = "round_robin"):
+    def __init__(
+        self,
+        logger: logging.Logger,
+        max_concurrency: int = 10,
+        proxy_strategy: str = "round_robin",
+        regions: Optional[List[str]] = None,
+    ):
         self.logger = logger
         self.semaphore = asyncio.Semaphore(max_concurrency)
         self.proxy_strategy = proxy_strategy
@@ -241,7 +255,12 @@ class SearchClient:
             }
         }
         self._aiohttp_session: Optional[aiohttp.ClientSession] = None
-        self.regions = ['northamerica-northeast', 'us-east', 'us-central', 'us-west']
+        self.regions = regions if regions is not None else [
+            'northamerica-northeast',
+            'us-east',
+            'us-central',
+            'us-west',
+        ]
         self._request_counter = 0  # For round-robin strategy
 
     async def _get_session(self) -> aiohttp.ClientSession:
@@ -474,7 +493,11 @@ async def orchestrate_entry_search(
 
     all_valid_results_collected: List[Dict] = []
     variation_type_priority = ["default"]
-    search_client = SearchClient(logger=logger)
+    search_client = SearchClient(
+        logger=logger,
+        proxy_strategy=PROXY_STRATEGY,
+        regions=PROXY_REGIONS,
+    )
     try:
         for variation_type in variation_type_priority:
             terms_for_type = search_variations_map.get(variation_type, [])
