@@ -55,7 +55,8 @@ from db_utils import (enqueue_db_update, fetch_last_valid_entry,
                       update_file_location_complete, update_initial_sort_order,
                       update_log_url_in_db)
 from email_utils import send_message_email, send_email
-from icon_image_lib.google_parser import process_search_result, process_search_page
+from icon_image_lib.google_parser import process_search_result
+from icon_image_lib.search_page_parser import get_results_page_results
 from logging_config import setup_job_logger
 from rabbitmq_producer import RabbitMQProducer
 from s3_utils import upload_file_to_space
@@ -367,8 +368,31 @@ class SearchClient:
                                                     search_page_json = await search_page_response.json()
                                                     search_page_html = search_page_json.get("result")
                                                     if search_page_html:
-                                                        search_html_bytes = search_page_html.encode('utf-8') if isinstance(search_page_html, str) else str(search_page_html).encode('utf-8')
-                                                        process_search_page(search_html_bytes, entry_id, self.logger)
+                                                        search_html_bytes = (
+                                                            search_page_html.encode("utf-8")
+                                                            if isinstance(search_page_html, str)
+                                                            else str(search_page_html).encode("utf-8")
+                                                        )
+                                                        urls, titles, sources, thumbs = get_results_page_results(
+                                                            search_html_bytes, self.logger
+                                                        )
+                                                        keywords = [brand, term]
+                                                        filtered_results = []
+                                                        for u, t, s, th in zip(urls, titles, sources, thumbs):
+                                                            combined = f"{u} {t}".lower()
+                                                            if all(
+                                                                k.lower() in combined for k in keywords if k
+                                                            ):
+                                                                try:
+                                                                    async with current_session.get(u) as nav_resp:
+                                                                        nav_resp.raise_for_status()
+                                                                        await nav_resp.text()
+                                                                except Exception as nav_e:
+                                                                    self.logger.warning(
+                                                                        f"PID {process_info.pid}: Failed to navigate to {u} for term='{term}' in region {region_name} via {fallback_proxy_type.value}: {nav_e}",
+                                                                        exc_info=True,
+                                                                    )
+                                                                filtered_results.append((u, t, s, th))
                                             except Exception as e_search:
                                                 self.logger.warning(
                                                     f"PID {process_info.pid}: Failed to fetch search page for term='{term}' in region {region_name} via {fallback_proxy_type.value}: {e_search}",
@@ -422,8 +446,29 @@ class SearchClient:
                                         search_page_json = await search_page_response.json()
                                         search_page_html = search_page_json.get("result")
                                         if search_page_html:
-                                            search_html_bytes = search_page_html.encode('utf-8') if isinstance(search_page_html, str) else str(search_page_html).encode('utf-8')
-                                            process_search_page(search_html_bytes, entry_id, self.logger)
+                                            search_html_bytes = (
+                                                search_page_html.encode("utf-8")
+                                                if isinstance(search_page_html, str)
+                                                else str(search_page_html).encode("utf-8")
+                                            )
+                                            urls, titles, sources, thumbs = get_results_page_results(
+                                                search_html_bytes, self.logger
+                                            )
+                                            keywords = [brand, term]
+                                            filtered_results = []
+                                            for u, t, s, th in zip(urls, titles, sources, thumbs):
+                                                combined = f"{u} {t}".lower()
+                                                if all(k.lower() in combined for k in keywords if k):
+                                                    try:
+                                                        async with current_session.get(u) as nav_resp:
+                                                            nav_resp.raise_for_status()
+                                                            await nav_resp.text()
+                                                    except Exception as nav_e:
+                                                        self.logger.warning(
+                                                            f"PID {process_info.pid}: Failed to navigate to {u} for term='{term}' in region {region_name} via {proxy_type.value}: {nav_e}",
+                                                            exc_info=True,
+                                                        )
+                                                    filtered_results.append((u, t, s, th))
                                 except Exception as e_search:
                                     self.logger.warning(
                                         f"PID {process_info.pid}: Failed to fetch search page for term='{term}' in region {region_name} via {proxy_type.value}: {e_search}",
