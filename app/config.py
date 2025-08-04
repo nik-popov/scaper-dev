@@ -27,7 +27,6 @@ ROAMINGPROXY_API_KEY = config['roamingproxy_settings']['api_key']
 ROAMINGPROXY_API_URL = config['roamingproxy_settings']['api_url']
 PROXY_STRATEGY = config.get('proxy_strategy', 'round_robin')
 PROXY_REGIONS = config.get('proxy_regions', [
-    'northamerica-northeast',
     'us-east',
     'us-central',
     'us-west',

@@ -14,7 +14,6 @@
     "search_proxy_api_url": "https://api.thedataproxy.com/v2/proxy/fetch"
   },
   "proxy_regions": [
-    "northamerica-northeast",
     "us-east",
     "us-central",
     "us-west"
