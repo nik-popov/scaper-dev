@@ -321,12 +321,82 @@ def process_search_result(image_html_bytes, entry_id: int, logger=None) -> pd.Da
     logger.info(f"Processed EntryID {entry_id} with {len(df)} images (after potential truncation).")
     return df
 
-def process_search_page(html_bytes, entry_id: int, logger=None):
-    """Placeholder for processing standard Google search HTML results."""
+import logging
+from typing import List, Dict
+from bs4 import BeautifulSoup
+
+def process_search_page(html_bytes: bytes, entry_id: int, logger=None) -> List[Dict]:
+    """Process Google search page HTML to extract search results.
+
+    Args:
+        html_bytes (bytes): The HTML content of the search page in bytes.
+        entry_id (int): Identifier for the search entry.
+        logger (logging.Logger, optional): Logger instance for debugging and errors.
+
+    Returns:
+        List[Dict]: List of dictionaries containing extracted search result details.
+    """
     logger = logger or logging.getLogger(__name__)
+    
     if not html_bytes:
         logger.debug(f"EntryID {entry_id}: No search page HTML to process.")
         return []
-    logger.debug(f"EntryID {entry_id}: Received search page HTML ({len(html_bytes)} bytes).")
-    return []
+    
+    try:
+        logger.debug(f"EntryID {entry_id}: Processing search page HTML ({len(html_bytes)} bytes).")
+        
+        # Decode bytes to string, assuming UTF-8 encoding
+        html_content = html_bytes.decode('utf-8', errors='ignore')
+        
+        # Parse HTML with BeautifulSoup
+        soup = BeautifulSoup(html_content, 'html.parser')
+        
+        # Initialize results list
+        results = []
+        
+        # Find search result containers (based on common Google search result structure)
+        # Note: Google’s structure may change; this targets common classes as of 2025
+        result_divs = soup.find_all('div', class_='tF2Cxc')  # Common class for main results
+        
+        for idx, result in enumerate(result_divs):
+            try:
+                # Extract title
+                title_tag = result.find('h3')
+                title = title_tag.get_text(strip=True) if title_tag else "N/A"
+                
+                # Extract URL
+                link_tag = result.find('a')
+                url = link_tag.get('href') if link_tag else "placeholder://no-url"
+                
+                # Extract snippet/description
+                snippet_tag = result.find('div', class_='VwiC3b')  # Common class for snippets
+                snippet = snippet_tag.get_text(strip=True) if snippet_tag else "N/A"
+                
+                # Extract thumbnail URL if available
+                thumbnail_tag = result.find('img')
+                thumbnail_url = thumbnail_tag.get('src') if thumbnail_tag else url
+                
+                # Structure the result
+                result_data = {
+                    "EntryID": entry_id,
+                    "Title": title,
+                    "Url": url,
+                    "Description": snippet,
+                    "ThumbnailUrl": thumbnail_url
+                }
+                
+                results.append(result_data)
+                
+                logger.debug(f"EntryID {entry_id}: Extracted result {idx + 1} - Title: {title[:50]}...")
+                
+            except Exception as e:
+                logger.warning(f"EntryID {entry_id}: Failed to process result {idx + 1}: {e}")
+                continue
+        
+        logger.info(f"EntryID {entry_id}: Successfully extracted {len(results)} results.")
+        return results
+    
+    except Exception as e:
+        logger.error(f"EntryID {entry_id}: Failed to process search page HTML: {e}", exc_info=True)
+        return []
 
