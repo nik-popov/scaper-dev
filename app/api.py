@@ -241,7 +241,7 @@ class SearchClient:
             }
         }
         self._aiohttp_session: Optional[aiohttp.ClientSession] = None
-        self.regions = ['northamerica-northeast', 'us-east', 'us-central', 'us-west', 'europe',]
+        self.regions = ['northamerica-northeast', 'us-east', 'us-central', 'us-west']
         self._request_counter = 0  # For round-robin strategy
 
     async def _get_session(self) -> aiohttp.ClientSession:
