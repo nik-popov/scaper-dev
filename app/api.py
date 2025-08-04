@@ -277,7 +277,8 @@ class SearchClient:
     async def search_single_term_all_regions(self, term: str, brand: str, entry_id: int) -> List[Dict]:
         async with self.semaphore:
             process_info = psutil.Process()
-            search_url_google = f"https://www.google.com/search?q={urllib.parse.quote(term)}&tbm=isch"
+            quoted_term = f'"{term}"'
+            search_url_google = f"https://www.google.com/search?q={urllib.parse.quote(quoted_term)}&tbm=isch"
             current_session = await self._get_session()
             results = []
 
