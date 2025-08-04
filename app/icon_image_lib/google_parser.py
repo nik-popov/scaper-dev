@@ -227,7 +227,7 @@ def get_results_page_results(html_bytes, final_urls, final_descriptions, final_s
 
         # Description
         # Updated description classes: 'VwiC3b' (from process_search_page), 's3v9rd', 'bytUYc'
-        desc_element = item_container.find(['div', 'span', 'a'], class_=lambda c: c and any(cls in c for cls in ['VwiC3b', 's3v9rd', 'bytUYc', 'mVDVAe']))
+        desc_element = item_container.find(['div', 'span', 'a'], class_=lambda c: c and any(cls in c for cls in ['VwiC3b', 's3v9rd', 'bytUYc', 'mVDVAe','MjjYud']))
         description = desc_element.get_text(strip=True) if desc_element else 'No description'
         final_descriptions.append(description)
 
