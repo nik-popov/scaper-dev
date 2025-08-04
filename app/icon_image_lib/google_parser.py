@@ -320,3 +320,13 @@ def process_search_result(image_html_bytes, entry_id: int, logger=None) -> pd.Da
     
     logger.info(f"Processed EntryID {entry_id} with {len(df)} images (after potential truncation).")
     return df
+
+def process_search_page(html_bytes, entry_id: int, logger=None):
+    """Placeholder for processing standard Google search HTML results."""
+    logger = logger or logging.getLogger(__name__)
+    if not html_bytes:
+        logger.debug(f"EntryID {entry_id}: No search page HTML to process.")
+        return []
+    logger.debug(f"EntryID {entry_id}: Received search page HTML ({len(html_bytes)} bytes).")
+    return []
+
