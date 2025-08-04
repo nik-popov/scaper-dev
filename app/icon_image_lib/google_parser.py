@@ -81,6 +81,9 @@ from bs4 import BeautifulSoup
 import logging
 import pandas as pd
 import urllib.parse # Added for the new function
+from icon_image_lib.search_page_parser import (
+    get_results_page_results as parse_search_page_results,
+)
 
 # Assuming LR class is in icon_image_lib.LR; otherwise, include it directly here
 from icon_image_lib.LR import LR # Make sure this import works
@@ -322,11 +325,41 @@ def process_search_result(image_html_bytes, entry_id: int, logger=None) -> pd.Da
     return df
 
 def process_search_page(html_bytes, entry_id: int, logger=None):
-    """Placeholder for processing standard Google search HTML results."""
+    """Parse a standard Google search results page into structured data.
+
+    Args:
+        html_bytes: Raw HTML bytes of a Google results page.
+        entry_id: Identifier for logging context.
+        logger: Optional logger instance.
+
+    Returns:
+        List of dictionaries containing Url, Title, Source, and Thumbnail.
+    """
+
     logger = logger or logging.getLogger(__name__)
     if not html_bytes:
         logger.debug(f"EntryID {entry_id}: No search page HTML to process.")
         return []
-    logger.debug(f"EntryID {entry_id}: Received search page HTML ({len(html_bytes)} bytes).")
-    return []
+
+    logger.debug(
+        f"EntryID {entry_id}: Processing search page HTML ({len(html_bytes)} bytes)."
+    )
+
+    try:
+        urls, titles, sources, thumbs = parse_search_page_results(html_bytes, logger)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.error(
+            f"EntryID {entry_id}: Failed to parse search page HTML: {exc}",
+            exc_info=True,
+        )
+        return []
+
+    results = [
+        {"EntryID": entry_id, "Url": u, "Title": t, "Source": s, "Thumbnail": th}
+        for u, t, s, th in zip(urls, titles, sources, thumbs)
+    ]
+    logger.info(
+        f"EntryID {entry_id}: Parsed {len(results)} search results from search page."
+    )
+    return results
 
