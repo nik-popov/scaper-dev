@@ -47,7 +47,7 @@ from db_utils import (enqueue_db_update, fetch_last_valid_entry,
                       update_file_location_complete, update_initial_sort_order,
                       update_log_url_in_db)
 from email_utils import send_message_email, send_email
-from icon_image_lib.google_parser import process_search_result
+from icon_image_lib.google_parser import process_search_result, process_search_page
 from logging_config import setup_job_logger
 from rabbitmq_producer import RabbitMQProducer
 from s3_utils import upload_file_to_space
@@ -337,6 +337,24 @@ class SearchClient:
                                         html_bytes = html_content_from_api.encode('utf-8') if isinstance(html_content_from_api, str) else str(html_content_from_api).encode('utf-8')
                                         formatted_results_df = process_search_result(html_bytes, entry_id, self.logger)
                                         if not formatted_results_df.empty:
+                                            try:
+                                                general_search_url = f"https://www.google.com/search?q={urllib.parse.quote(term)}"
+                                                async with current_session.post(
+                                                    fallback_endpoint,
+                                                    json={"url": general_search_url},
+                                                    headers=self.proxies[fallback_proxy_type]["headers"]
+                                                ) as search_page_response:
+                                                    search_page_response.raise_for_status()
+                                                    search_page_json = await search_page_response.json()
+                                                    search_page_html = search_page_json.get("result")
+                                                    if search_page_html:
+                                                        search_html_bytes = search_page_html.encode('utf-8') if isinstance(search_page_html, str) else str(search_page_html).encode('utf-8')
+                                                        process_search_page(search_html_bytes, entry_id, self.logger)
+                                            except Exception as e_search:
+                                                self.logger.warning(
+                                                    f"PID {process_info.pid}: Failed to fetch search page for term='{term}' in region {region_name} via {fallback_proxy_type.value}: {e_search}",
+                                                    exc_info=True
+                                                )
                                             results = [
                                                 {
                                                     "EntryID": entry_id,
@@ -374,6 +392,24 @@ class SearchClient:
                             html_bytes = html_content_from_api.encode('utf-8') if isinstance(html_content_from_api, str) else str(html_content_from_api).encode('utf-8')
                             formatted_results_df = process_search_result(html_bytes, entry_id, self.logger)
                             if not formatted_results_df.empty:
+                                try:
+                                    general_search_url = f"https://www.google.com/search?q={urllib.parse.quote(term)}"
+                                    async with current_session.post(
+                                        current_fetch_endpoint,
+                                        json={"url": general_search_url},
+                                        headers=proxy_config["headers"]
+                                    ) as search_page_response:
+                                        search_page_response.raise_for_status()
+                                        search_page_json = await search_page_response.json()
+                                        search_page_html = search_page_json.get("result")
+                                        if search_page_html:
+                                            search_html_bytes = search_page_html.encode('utf-8') if isinstance(search_page_html, str) else str(search_page_html).encode('utf-8')
+                                            process_search_page(search_html_bytes, entry_id, self.logger)
+                                except Exception as e_search:
+                                    self.logger.warning(
+                                        f"PID {process_info.pid}: Failed to fetch search page for term='{term}' in region {region_name} via {proxy_type.value}: {e_search}",
+                                        exc_info=True
+                                    )
                                 self.logger.info(
                                     f"PID {process_info.pid}: Successfully found {len(formatted_results_df)} results for term='{term}' "
                                     f"in region {region_name} via {proxy_type.value}."
@@ -758,6 +794,7 @@ async def process_restart_batch(
     logger: logging.Logger = default_logger,
     background_tasks: Optional[BackgroundTasks] = None,
     num_workers: int = 4,
+    process_all_entries: bool = False,
 ) -> Dict[str, Any]:
     current_log_filename = "unknown_log_file.log"  # Placeholder
     if logger.handlers and hasattr(logger.handlers[0], "baseFilename"):
@@ -861,34 +898,26 @@ async def process_restart_batch(
     entries_to_process_list: List[Tuple] = []
     try:
         async with async_engine.connect() as db_conn_fetch:
-            sql_fetch_entries = text(
-                """
-                SELECT r.{SCRAPER_RECORDS_PK_COLUMN}, r.{SCRAPER_RECORDS_PRODUCT_MODEL_COLUMN}, 
-                    r.{SCRAPER_RECORDS_PRODUCT_BRAND_COLUMN}, r.{SCRAPER_RECORDS_PRODUCT_COLOR_COLUMN}, 
-                    r.{SCRAPER_RECORDS_PRODUCT_CATEGORY_COLUMN}
-                FROM {SCRAPER_RECORDS_TABLE_NAME} r
-                WHERE r.{SCRAPER_RECORDS_FILE_ID_FK_COLUMN} = :fid
-                AND r.{SCRAPER_RECORDS_PRODUCT_MODEL_COLUMN} IS NOT NULL 
-                AND r.{SCRAPER_RECORDS_PRODUCT_MODEL_COLUMN} <> ''
+            not_exists_clause = "" if process_all_entries else f"""
                 AND NOT EXISTS (
-                    SELECT 1 
-                    FROM {IMAGE_SCRAPER_RESULT_TABLE_NAME} res 
+                    SELECT 1
+                    FROM {IMAGE_SCRAPER_RESULT_TABLE_NAME} res
                     WHERE res.{IMAGE_SCRAPER_RESULT_ENTRY_ID_FK_COLUMN} = r.{SCRAPER_RECORDS_PK_COLUMN}
                         AND res.{IMAGE_SCRAPER_RESULT_SORT_ORDER_COLUMN} = 1
                 )
+            """
+            sql_fetch_entries = text(
+                f"""
+                SELECT r.{SCRAPER_RECORDS_PK_COLUMN}, r.{SCRAPER_RECORDS_PRODUCT_MODEL_COLUMN},
+                    r.{SCRAPER_RECORDS_PRODUCT_BRAND_COLUMN}, r.{SCRAPER_RECORDS_PRODUCT_COLOR_COLUMN},
+                    r.{SCRAPER_RECORDS_PRODUCT_CATEGORY_COLUMN}
+                FROM {SCRAPER_RECORDS_TABLE_NAME} r
+                WHERE r.{SCRAPER_RECORDS_FILE_ID_FK_COLUMN} = :fid
+                AND r.{SCRAPER_RECORDS_PRODUCT_MODEL_COLUMN} IS NOT NULL
+                AND r.{SCRAPER_RECORDS_PRODUCT_MODEL_COLUMN} <> ''
+                {not_exists_clause}
                 ORDER BY r.{SCRAPER_RECORDS_PK_COLUMN};
-            """.format(
-                    SCRAPER_RECORDS_PK_COLUMN=SCRAPER_RECORDS_PK_COLUMN,
-                    SCRAPER_RECORDS_PRODUCT_MODEL_COLUMN=SCRAPER_RECORDS_PRODUCT_MODEL_COLUMN,
-                    SCRAPER_RECORDS_PRODUCT_BRAND_COLUMN=SCRAPER_RECORDS_PRODUCT_BRAND_COLUMN,
-                    SCRAPER_RECORDS_PRODUCT_COLOR_COLUMN=SCRAPER_RECORDS_PRODUCT_COLOR_COLUMN,
-                    SCRAPER_RECORDS_PRODUCT_CATEGORY_COLUMN=SCRAPER_RECORDS_PRODUCT_CATEGORY_COLUMN,
-                    SCRAPER_RECORDS_TABLE_NAME=SCRAPER_RECORDS_TABLE_NAME,
-                    SCRAPER_RECORDS_FILE_ID_FK_COLUMN=SCRAPER_RECORDS_FILE_ID_FK_COLUMN,
-                    IMAGE_SCRAPER_RESULT_TABLE_NAME=IMAGE_SCRAPER_RESULT_TABLE_NAME,
-                    IMAGE_SCRAPER_RESULT_ENTRY_ID_FK_COLUMN=IMAGE_SCRAPER_RESULT_ENTRY_ID_FK_COLUMN,
-                    IMAGE_SCRAPER_RESULT_SORT_ORDER_COLUMN=IMAGE_SCRAPER_RESULT_SORT_ORDER_COLUMN,
-                )
+                """
             )
             db_res_entries = await db_conn_fetch.execute(
                 sql_fetch_entries, {"fid": file_id_for_db}
@@ -896,7 +925,8 @@ async def process_restart_batch(
             entries_to_process_list = db_res_entries.fetchall()
             db_res_entries.close()
         logger.info(
-            f"FileID {file_id_for_db}: Fetched {len(entries_to_process_list)} entries that have no results with SortOrder = 1."
+            f"FileID {file_id_for_db}: Fetched {len(entries_to_process_list)} entries"
+            + (" (all entries)." if process_all_entries else " that have no results with SortOrder = 1.")
         )
     except SQLAlchemyError as db_exc_fetch:
         error_msg = f"Database error fetching entries for FileID {file_id_for_db}: {db_exc_fetch}"
@@ -914,7 +944,11 @@ async def process_restart_batch(
             "last_entry_id_processed": "0",
         }
     if not entries_to_process_list:
-        success_msg = f"No entries with positive SortOrder results found for FileID {file_id_for_db}."
+        success_msg = (
+            f"No entries found for FileID {file_id_for_db}."
+            if process_all_entries
+            else f"No entries with positive SortOrder results found for FileID {file_id_for_db}."
+        )
         logger.info(success_msg)
         log_url = await upload_log_file(
             file_id_db_str,
@@ -1582,7 +1616,7 @@ async def api_clear_ai_json(file_id: str, entry_ids: Optional[List[int]] = Query
 @router.post("/restart-job/{file_id}", tags=["Processing"], response_model=None)
 async def api_process_restart_job(
     file_id: str,
-    background_tasks: BackgroundTasks, 
+    background_tasks: BackgroundTasks,
     entry_id: Optional[int] = Query(None),
     use_all_variations: bool = Query(False),
     num_workers_hint: int = Query(4, ge=1, le=cpu_count() * 2),
@@ -1597,6 +1631,34 @@ async def api_process_restart_job(
     if job_result["status_code"] != 200:
         raise HTTPException(status_code=job_result["status_code"], detail=job_result["message"])
     return {"status_code": 200, "message": f"Job restart for FileID '{file_id}' initiated.", "details": job_result.get("data"), "log_url": job_result.get("debug_info", {}).get("log_s3_url", "N/A")}
+
+
+@router.post("/restart-search-all/{file_id}", tags=["Processing"], response_model=None)
+async def api_restart_search_all(
+    file_id: str,
+    background_tasks: BackgroundTasks,
+    use_all_variations: bool = Query(False),
+    num_workers_hint: int = Query(4, ge=1, le=cpu_count() * 2),
+):
+    job_run_id = f"restart_search_all_{file_id}_{'allvars' if use_all_variations else 'stdvars'}_{num_workers_hint}w"
+    job_result = await run_job_with_logging(
+        job_func=process_restart_batch,
+        file_id_context=job_run_id,
+        file_id_db_str=file_id,
+        entry_id=None,
+        use_all_variations=use_all_variations,
+        background_tasks=background_tasks,
+        num_workers=num_workers_hint,
+        process_all_entries=True,
+    )
+    if job_result["status_code"] != 200:
+        raise HTTPException(status_code=job_result["status_code"], detail=job_result["message"])
+    return {
+        "status_code": 200,
+        "message": f"Restart search for all entries in FileID '{file_id}' initiated.",
+        "details": job_result.get("data"),
+        "log_url": job_result.get("debug_info", {}).get("log_s3_url", "N/A"),
+    }
 
 
 class TestableSearchResult(BaseModel):
