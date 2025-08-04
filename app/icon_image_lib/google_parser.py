@@ -188,96 +188,92 @@ def get_original_images(html_bytes, logger=None):
     logger.debug(f"GetOriginal: URLs={len(main_image_urls)}, Desc={len(main_descriptions)}, Sources={len(main_source_urls)}, Thumbs={len(main_thumbs)}")
     return main_image_urls, main_descriptions, main_source_urls, main_thumbs
 
-def get_results_page_results(html_bytes, final_urls, final_descriptions, final_sources, final_thumbs, logger=None):
-    """Extract additional image data from results page HTML without base64."""
-    logger = logger or logging.getLogger(__name__) # Ensure logger
-    html_content = decode_html_bytes(html_bytes, logger)
+import logging
+from bs4 import BeautifulSoup
+from urllib.parse import unquote, urlparse
+import re
 
-    soup = BeautifulSoup(html_content, 'html.parser')
-    # Class names for Google search results can change, verify these if issues arise
-    result_divs = soup.find_all('div', class_='H8Rx8c') # This class seems to be for "Related images" or similar blocks
+def clean_source_url(raw_url: str) -> str:
+    """Clean a URL by decoding Unicode escape sequences and removing unnecessary characters."""
+    if not raw_url:
+        return ""
+    cleaned = unquote(raw_url)
+    cleaned = re.sub(r"\?.*$|#$", "", cleaned)
+    return cleaned.strip()
 
+def extract_true_url_from_wrapper(raw_url: str, logger: logging.Logger) -> str:
+    """Extract the true URL from Google's redirect wrapper URLs."""
+    if not raw_url:
+        return "No URL"
+    if raw_url.startswith("/url?"):
+        match = re.search(r"q=([^&]+)", raw_url)
+        if match:
+            return clean_source_url(match.group(1))
+    return clean_source_url(raw_url)
+
+def clean_image_url(url: str) -> str:
+    """Clean an image URL to ensure it's valid and direct."""
+    if not url or "data:image" in url:
+        return "No image URL"
+    if url.startswith("//"):
+        url = f"https:{url}"
+    elif url.startswith("/"):
+        url = f"https://www.google.com{url}"
+    return clean_source_url(url)
+
+def get_results_page_results(html_bytes: bytes, logger: logging.Logger = None) -> tuple[list, list, list, list]:
+    """
+    Extract organic search results from Google search results HTML.
+    
+    Args:
+        html_bytes: Raw HTML bytes of the Google search results page.
+        logger: Optional logger instance for debugging.
+    
+    Returns:
+        Tuple of (urls, titles, sources, thumbnails) as lists.
+    """
+    logger = logger or logging.getLogger(__name__)
+    try:
+        html_content = html_bytes.decode("utf-8", errors="ignore")
+    except Exception as e:
+        logger.error(f"Failed to decode HTML bytes: {e}")
+        return [], [], [], []
+
+    soup = BeautifulSoup(html_content, "html.parser")
+    final_urls, final_titles, final_sources, final_thumbs = [], [], [], []
+
+    result_divs = soup.find_all("div", class_="MjjYud")
     if not result_divs:
-        # Try another common class for image result items if H8Rx8c fails
-        result_divs = soup.find_all('div', class_='isv motiva_DRHBO') # Example: for individual image results
-        if not result_divs:
-            result_divs = soup.find_all('a', class_='isv-r') # Another common pattern for image items
-            if not result_divs:
-                 logger.warning("No primary result item divs (H8Rx8c, isv motiva_DRHBO, isv-r) found in additional results page")
-                 return final_urls, final_descriptions, final_sources, final_thumbs
+        logger.warning("No primary result divs (MjjYud) found, trying alternative selectors")
+        result_divs = soup.find_all("div", class_=lambda c: c and any(cls in c for cls in ["g", "tF2Cxc"]))
 
-    logger.info(f"Found {len(result_divs)} potential items in additional results page.")
+    logger.info(f"Found {len(result_divs)} potential result items.")
 
     for item_container in result_divs:
-        if len(final_urls) >= 100: # Overall cap
+        if len(final_urls) >= 100:
+            logger.debug("Reached result cap of 100, stopping.")
             break
 
-        # Thumbnail
-        # Common img tags: 'rg_i Q4LuWd', 'n3VNCb KAlRDb', 'YQ4gaf'
-        img_tag = item_container.find('img', class_=lambda c: c and any(cls in c for cls in ['rg_i', 'n3VNCb', 'YQ4gaf', 'gdOPf', 'uhHOwf', 'ez24Df']))
-        raw_thumb_url = None
-        if img_tag:
-            raw_thumb_url = img_tag.get('src') or img_tag.get('data-src')
-        
-        if not raw_thumb_url or 'data:image' in raw_thumb_url: # Skip base64
-            logger.debug("No valid thumbnail URL or base64 src in result item, skipping.")
-            continue
-        
-        thumb = clean_source_url(raw_thumb_url) # uXXXX decode for thumb
-        # Thumbnails are usually direct, no need for extract_true_url_from_wrapper or clean_image_url
+        link_tag = item_container.find("a", href=True)
+        raw_href = link_tag.get("href") if link_tag else None
+        url = extract_true_url_from_wrapper(raw_href, logger) if raw_href else "No URL"
+        final_urls.append(url)
+
+        title_tag = item_container.find("h3")
+        title = title_tag.get_text(strip=True) if title_tag else "No title"
+        final_titles.append(title)
+
+        source_tag = item_container.find("cite")
+        source = source_tag.get_text(strip=True).split(" › ")[0] if source_tag else urlparse(url).netloc or "No source"
+        final_sources.append(clean_source_url(source))
+
+        img_tag = item_container.find("img", class_=lambda c: c and any(cls in c for cls in ["rg_i", "n3VNCb", "YQ4gaf"]))
+        thumb_url = img_tag.get("src") or img_tag.get("data-src") if img_tag else None
+        thumb = clean_image_url(thumb_url) if thumb_url and "data:image" not in thumb_url else "No thumbnail"
         final_thumbs.append(thumb)
 
-        # Description
-        # Common description/title holders: 'bytUYc', 'VFACy kGQAp S2WUTe', 'mVDVAe'
-        desc_element = item_container.find(['div', 'span', 'a'], class_=lambda c: c and any(cls in c for cls in ['bytUYc', 'VFACy', 'mVDVAe', 'VwiC3b']))
-        description = desc_element.get_text(strip=True) if desc_element else 'No description'
-        final_descriptions.append(description)
-
-        # Source (often the domain name or page title linking to the source page)
-        # Common source holders: 'VuuXrf', 'SW5pqf', 'cite' with class 'qLRx3b'
-        source_element = item_container.find(['cite', 'div', 'span'], class_=lambda c: c and any(cls in c for cls in ['VuuXrf', 'SW5pqf', 'qLRx3b']))
-        raw_source_text = source_element.get_text(strip=True) if source_element else 'No source'
-        
-        # Process source text: clean uXXXX, then extract if it's a wrapper URL
-        # Check if it looks like a URL before trying to extract from wrapper
-        cleaned_source_text = clean_source_url(raw_source_text)
-        if cleaned_source_text.startswith(('http', '/', 'www.')):
-            source = extract_true_url_from_wrapper(cleaned_source_text, logger)
-        else:
-            source = cleaned_source_text # It's just text, not a URL
-        final_sources.append(source)
-
-        # Main Image URL (often found in a link wrapping the image or a data attribute)
-        # Common link tags: 'ایش zReHs', 'VFACy kGQAp S2WUTe', 'isv-r' (if item_container is this)
-        # Sometimes the link is the item_container itself if it's an <a> tag
-        link_tag = None
-        if item_container.name == 'a':
-            link_tag = item_container
-        else:
-            link_tag = item_container.find('a', class_=lambda c: c and any(cls in c for cls in ['zReHs', 'VFACy', 'isv-r']))
-
-        raw_href = link_tag.get('href') if link_tag and link_tag.get('href') else None
-        
-        # Alternative: Look for data-actualn3r (or similar) on img_tag for direct full image URL
-        if not raw_href and img_tag:
-             raw_href = img_tag.get('data-actualn3r') # This sometimes holds the direct image link
-
-        image_url_final = 'No image URL'
-        if raw_href:
-            url1 = clean_source_url(raw_href)
-            url2 = extract_true_url_from_wrapper(url1, logger)
-            image_url_final = clean_image_url(url2)
-        final_urls.append(image_url_final)
-
-    if len(final_urls) > 100: # Cap after processing
-        final_urls = final_urls[:100]
-        final_descriptions = final_descriptions[:100]
-        final_sources = final_sources[:100]
-        final_thumbs = final_thumbs[:100]
-        logger.debug("Capped total results from additional page processing at 100")
-
-    logger.debug(f"GetResultsPage: Total after append: URLs={len(final_urls)}")
-    return final_urls, final_descriptions, final_sources, final_thumbs
+    logger.debug(f"Parsed {len(final_urls)} results: URLs={len(final_urls)}, Titles={len(final_titles)}, Sources={len(final_sources)}, Thumbnails={len(final_thumbs)}")
+    return final_urls, final_titles, final_sources, final_thumbs
 
 
 def process_search_result(image_html_bytes, entry_id: int, logger=None) -> pd.DataFrame:
@@ -291,10 +287,6 @@ def process_search_result(image_html_bytes, entry_id: int, logger=None) -> pd.Da
     
     # Then, try to get images from structured HTML elements (if any, or as supplement)
     # Pass the *current* lists to be appended to.
-    final_urls, final_descriptions, final_sources, final_thumbs = get_results_page_results(
-        image_html_bytes, final_urls, final_descriptions, final_sources, final_thumbs, logger
-    )
-    
     # Ensure all lists have the same length before creating DataFrame
     all_lists = [final_urls, final_descriptions, final_sources, final_thumbs]
     if not all_lists: # Should not happen if functions return empty lists
@@ -321,12 +313,81 @@ def process_search_result(image_html_bytes, entry_id: int, logger=None) -> pd.Da
     logger.info(f"Processed EntryID {entry_id} with {len(df)} images (after potential truncation).")
     return df
 
-def process_search_page(html_bytes, entry_id: int, logger=None):
-    """Placeholder for processing standard Google search HTML results."""
+import logging
+from typing import List, Dict
+from bs4 import BeautifulSoup
+
+def process_search_page(html_bytes: bytes, entry_id: int, logger=None) -> List[Dict]:
+    """Process Google search page HTML to extract search results.
+
+    Args:
+        html_bytes (bytes): The HTML content of the search page in bytes.
+        entry_id (int): Identifier for the search entry.
+        logger (logging.Logger, optional): Logger instance for debugging and errors.
+
+    Returns:
+        List[Dict]: List of dictionaries containing extracted search result details.
+    """
     logger = logger or logging.getLogger(__name__)
+    
     if not html_bytes:
         logger.debug(f"EntryID {entry_id}: No search page HTML to process.")
         return []
-    logger.debug(f"EntryID {entry_id}: Received search page HTML ({len(html_bytes)} bytes).")
-    return []
-
+    
+    try:
+        logger.debug(f"EntryID {entry_id}: Processing search page HTML ({len(html_bytes)} bytes).")
+        
+        # Decode bytes to string, assuming UTF-8 encoding
+        html_content = html_bytes.decode('utf-8', errors='ignore')
+        
+        # Parse HTML with BeautifulSoup
+        soup = BeautifulSoup(html_content, 'html.parser')
+        
+        # Initialize results list
+        results = []
+        
+        # Find search result containers (based on common Google search result structure)
+        # Note: Google’s structure may change; this targets common classes as of 2025
+        result_divs = soup.find_all('div', class_='tF2Cxc')  # Common class for main results
+        
+        for idx, result in enumerate(result_divs):
+            try:
+                # Extract title
+                title_tag = result.find('h3')
+                title = title_tag.get_text(strip=True) if title_tag else "N/A"
+                
+                # Extract URL
+                link_tag = result.find('a')
+                url = link_tag.get('href') if link_tag else "placeholder://no-url"
+                
+                # Extract snippet/description
+                snippet_tag = result.find('div', class_='VwiC3b')  # Common class for snippets
+                snippet = snippet_tag.get_text(strip=True) if snippet_tag else "N/A"
+                
+                # Extract thumbnail URL if available
+                thumbnail_tag = result.find('img')
+                thumbnail_url = thumbnail_tag.get('src') if thumbnail_tag else url
+                
+                # Structure the result
+                result_data = {
+                    "EntryID": entry_id,
+                    "Title": title,
+                    "Url": url,
+                    "Description": snippet,
+                    "ThumbnailUrl": thumbnail_url
+                }
+                
+                results.append(result_data)
+                
+                logger.debug(f"EntryID {entry_id}: Extracted result {idx + 1} - Title: {title[:50]}...")
+                
+            except Exception as e:
+                logger.warning(f"EntryID {entry_id}: Failed to process result {idx + 1}: {e}")
+                continue
+        
+        logger.info(f"EntryID {entry_id}: Successfully extracted {len(results)} results.")
+        return results
+    
+    except Exception as e:
+        logger.error(f"EntryID {entry_id}: Failed to process search page HTML: {e}", exc_info=True)
+        return []
