@@ -190,77 +190,73 @@ def get_original_images(html_bytes, logger=None):
 
 def get_results_page_results(html_bytes, final_urls, final_descriptions, final_sources, final_thumbs, logger=None):
     """Extract additional image data from results page HTML without base64."""
-    logger = logger or logging.getLogger(__name__) # Ensure logger
+    logger = logger or logging.getLogger(__name__)  # Ensure logger
     html_content = decode_html_bytes(html_bytes, logger)
 
     soup = BeautifulSoup(html_content, 'html.parser')
-    # Class names for Google search results can change, verify these if issues arise
-    result_divs = soup.find_all('div', class_='H8Rx8c') # This class seems to be for "Related images" or similar blocks
+    # Updated class names based on current Google image search structure (as of 2025)
+    # 'isv-r' and 'tF2Cxc'-like classes are common for image results; using broader selectors
+    result_divs = soup.find_all('div', class_=lambda c: c and any(cls in c for cls in ['isv-r', 'tF2Cxc', 'MjjYud']))  # Added 'MjjYud' as a common container class
 
     if not result_divs:
-        # Try another common class for image result items if H8Rx8c fails
-        result_divs = soup.find_all('div', class_='isv motiva_DRHBO') # Example: for individual image results
+        # Fallback: Try finding 'a' tags with image-related classes or generic result containers
+        result_divs = soup.find_all('a', class_=lambda c: c and 'isv-r' in c) or soup.find_all('div', class_='g')  # 'g' is a fallback for generic result divs
         if not result_divs:
-            result_divs = soup.find_all('a', class_='isv-r') # Another common pattern for image items
-            if not result_divs:
-                 logger.warning("No primary result item divs (H8Rx8c, isv motiva_DRHBO, isv-r) found in additional results page")
-                 return final_urls, final_descriptions, final_sources, final_thumbs
+            logger.warning("No primary result item divs (isv-r, tF2Cxc, MjjYud, g) found in additional results page")
+            return final_urls, final_descriptions, final_sources, final_thumbs
 
     logger.info(f"Found {len(result_divs)} potential items in additional results page.")
 
     for item_container in result_divs:
-        if len(final_urls) >= 100: # Overall cap
+        if len(final_urls) >= 100:  # Overall cap
             break
 
         # Thumbnail
-        # Common img tags: 'rg_i Q4LuWd', 'n3VNCb KAlRDb', 'YQ4gaf'
-        img_tag = item_container.find('img', class_=lambda c: c and any(cls in c for cls in ['rg_i', 'n3VNCb', 'YQ4gaf', 'gdOPf', 'uhHOwf', 'ez24Df']))
+        # Updated image classes: 'YQ4gaf', 'n3VNCb', 'rg_i' are common; added 'sImg' as a potential new class
+        img_tag = item_container.find('img', class_=lambda c: c and any(cls in c for cls in ['YQ4gaf', 'n3VNCb', 'rg_i', 'sImg', 'uhHOwf', 'ez24Df']))
         raw_thumb_url = None
         if img_tag:
-            raw_thumb_url = img_tag.get('src') or img_tag.get('data-src')
-        
-        if not raw_thumb_url or 'data:image' in raw_thumb_url: # Skip base64
+            raw_thumb_url = img_tag.get('src') or img_tag.get('data-src') or img_tag.get('data-lazy-src')  # Added 'data-lazy-src' for modern lazy-loading
+
+        if not raw_thumb_url or 'data:image' in raw_thumb_url:  # Skip base64
             logger.debug("No valid thumbnail URL or base64 src in result item, skipping.")
             continue
-        
-        thumb = clean_source_url(raw_thumb_url) # uXXXX decode for thumb
-        # Thumbnails are usually direct, no need for extract_true_url_from_wrapper or clean_image_url
+
+        thumb = clean_source_url(raw_thumb_url)  # uXXXX decode for thumb
         final_thumbs.append(thumb)
 
         # Description
-        # Common description/title holders: 'bytUYc', 'VFACy kGQAp S2WUTe', 'mVDVAe'
-        desc_element = item_container.find(['div', 'span', 'a'], class_=lambda c: c and any(cls in c for cls in ['bytUYc', 'VFACy', 'mVDVAe', 'VwiC3b']))
+        # Updated description classes: 'VwiC3b' (from process_search_page), 's3v9rd', 'bytUYc'
+        desc_element = item_container.find(['div', 'span', 'a'], class_=lambda c: c and any(cls in c for cls in ['VwiC3b', 's3v9rd', 'bytUYc', 'mVDVAe']))
         description = desc_element.get_text(strip=True) if desc_element else 'No description'
         final_descriptions.append(description)
 
-        # Source (often the domain name or page title linking to the source page)
-        # Common source holders: 'VuuXrf', 'SW5pqf', 'cite' with class 'qLRx3b'
-        source_element = item_container.find(['cite', 'div', 'span'], class_=lambda c: c and any(cls in c for cls in ['VuuXrf', 'SW5pqf', 'qLRx3b']))
+        # Source
+        # Updated source classes: 'VuuXrf', 'qLRx3b', 'iUh30' (common for citations)
+        source_element = item_container.find(['cite', 'div', 'span'], class_=lambda c: c and any(cls in c for cls in ['VuuXrf', 'qLRx3b', 'iUh30']))
         raw_source_text = source_element.get_text(strip=True) if source_element else 'No source'
-        
-        # Process source text: clean uXXXX, then extract if it's a wrapper URL
-        # Check if it looks like a URL before trying to extract from wrapper
+
+        # Process source text
         cleaned_source_text = clean_source_url(raw_source_text)
         if cleaned_source_text.startswith(('http', '/', 'www.')):
             source = extract_true_url_from_wrapper(cleaned_source_text, logger)
         else:
-            source = cleaned_source_text # It's just text, not a URL
+            source = cleaned_source_text  # It's just text, not a URL
         final_sources.append(source)
 
-        # Main Image URL (often found in a link wrapping the image or a data attribute)
-        # Common link tags: 'ایش zReHs', 'VFACy kGQAp S2WUTe', 'isv-r' (if item_container is this)
-        # Sometimes the link is the item_container itself if it's an <a> tag
+        # Main Image URL
+        # Updated link classes: 'VFACy', 'zReHs', or item_container itself if it's an 'a' tag
         link_tag = None
         if item_container.name == 'a':
             link_tag = item_container
         else:
-            link_tag = item_container.find('a', class_=lambda c: c and any(cls in c for cls in ['zReHs', 'VFACy', 'isv-r']))
+            link_tag = item_container.find('a', class_=lambda c: c and any(cls in c for cls in ['VFACy', 'zReHs', 'isv-r']))
 
         raw_href = link_tag.get('href') if link_tag and link_tag.get('href') else None
-        
-        # Alternative: Look for data-actualn3r (or similar) on img_tag for direct full image URL
+
+        # Alternative: Check data attributes for direct image URL
         if not raw_href and img_tag:
-             raw_href = img_tag.get('data-actualn3r') # This sometimes holds the direct image link
+            raw_href = img_tag.get('data-iurl') or img_tag.get('data-actualn3r')  # Added 'data-iurl' as a modern attribute
 
         image_url_final = 'No image URL'
         if raw_href:
@@ -269,7 +265,7 @@ def get_results_page_results(html_bytes, final_urls, final_descriptions, final_s
             image_url_final = clean_image_url(url2)
         final_urls.append(image_url_final)
 
-    if len(final_urls) > 100: # Cap after processing
+    if len(final_urls) > 100:  # Cap after processing
         final_urls = final_urls[:100]
         final_descriptions = final_descriptions[:100]
         final_sources = final_sources[:100]
