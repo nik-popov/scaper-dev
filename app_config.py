@@ -1,11 +1,29 @@
 import requests
 import logging
 import json
+from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy import create_engine
 
 # Setup logging
 logger = logging.getLogger(__name__)
 if not logger.handlers:
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+# Database connection string
+conn_str = "DRIVER={ODBC Driver 17 for SQL Server};Server=35.172.243.170;Database=luxurymarket_p4;Uid=luxurysitescraper;Pwd=Ftu5675FDG54hjhiuu$;"
+
+# Create SQLAlchemy engines
+async_engine = create_async_engine("mssql+aioodbc:///?odbc_connect=" + conn_str)
+engine = create_engine(
+    f"mssql+pyodbc:///?odbc_connect={conn_str}",
+    echo=False,
+    pool_size=5,
+    max_overflow=5,
+    pool_timeout=60,
+    pool_pre_ping=True,
+    pool_recycle=3600,
+    isolation_level="READ COMMITTED"
+)
 
 def load_config_constants(config_url, fallback_db_password=None):
     try:
