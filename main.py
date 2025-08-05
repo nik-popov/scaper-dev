@@ -328,7 +328,7 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
             ws.row_dimensions[row_num].height = DEFAULT_ROW_HEIGHT_POINTS
 
     for row_id in range(min_row_id, max_row_id + 1):
-        row_num = row_id + header_row
+        row_num = row_id + header_row  # This ensures we start writing after the header row
         ws.row_dimensions[row_num].height = DEFAULT_ROW_HEIGHT_POINTS
 
         if row_id in row_data_map:
@@ -348,17 +348,25 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
             else:
                 logger_instance.info(f"No image found for Row {row_id}, writing metadata only")
 
-            ws[f"B{row_num}"] = item.get('Brand', '')
-            ws[f"D{row_num}"] = item.get('Style', '')
-            ws[f"E{row_num}"] = item.get('Color', '')
-            ws[f"H{row_num}"] = item.get('Category', '')
-            logger_instance.info(f"Wrote metadata for Row {row_id} at Excel row {row_num}")
+            # Write metadata only to rows after header_row
+            if row_num > header_row:
+                ws[f"B{row_num}"] = item.get('Brand', '')
+                ws[f"D{row_num}"] = item.get('Style', '')
+                ws[f"E{row_num}"] = item.get('Color', '')
+                ws[f"H{row_num}"] = item.get('Category', '')
+                logger_instance.info(f"Wrote metadata for Row {row_id} at Excel row {row_num}")
+            else:
+                logger_instance.warning(f"Skipping metadata write for row {row_num} as it is the header row")
         else:
-            ws[f"B{row_num}"] = ''
-            ws[f"D{row_num}"] = ''
-            ws[f"E{row_num}"] = ''
-            ws[f"H{row_num}"] = ''
-            logger_instance.info(f"Filled missing row {row_num} (ExcelRowID {row_id}) with empty metadata")
+            # Only clear cells after header_row
+            if row_num > header_row:
+                ws[f"B{row_num}"] = ''
+                ws[f"D{row_num}"] = ''
+                ws[f"E{row_num}"] = ''
+                ws[f"H{row_num}"] = ''
+                logger_instance.info(f"Filled missing row {row_num} (ExcelRowID {row_id}) with empty metadata")
+            else:
+                logger_instance.info(f"Skipping row {row_num} (ExcelRowID {row_id}) as it is the header row")
 
     if ws.max_row > max_row_id + header_row:
         logger_instance.info(f"Deleting {ws.max_row - (max_row_id + header_row)} rows after row {max_row_id + header_row}")
