@@ -291,9 +291,9 @@ def process_search_result(image_html_bytes, entry_id: int, logger=None) -> pd.Da
     
     # Then, try to get images from structured HTML elements (if any, or as supplement)
     # Pass the *current* lists to be appended to.
-    final_urls, final_descriptions, final_sources, final_thumbs = get_results_page_results(
-        image_html_bytes, final_urls, final_descriptions, final_sources, final_thumbs, logger
-    )
+    # final_urls, final_descriptions, final_sources, final_thumbs = get_results_page_results(
+    #     image_html_bytes, final_urls, final_descriptions, final_sources, final_thumbs, logger
+    # )
     
     # Ensure all lists have the same length before creating DataFrame
     all_lists = [final_urls, final_descriptions, final_sources, final_thumbs]
