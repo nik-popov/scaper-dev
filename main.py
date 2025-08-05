@@ -509,7 +509,8 @@ def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict],
         wb = load_workbook(local_filename)
         ws = wb.active
         image_map = {int(Path(f).stem): f for f in os.listdir(temp_dir) if Path(f).stem.isdigit()}
-
+        if not re.match(r'^[A-Z]+$', target_column):
+            raise ValueError(f"Invalid target_column: {target_column}. Must be a valid Excel column letter (e.g., 'A', 'B', 'AA').")
         # Get default row height
         row_dim = ws.row_dimensions.get(header_row + 1)
         DEFAULT_ROW_HEIGHT_POINTS = row_dim.height if row_dim and row_dim.height is not None else 12.75
