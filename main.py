@@ -299,6 +299,7 @@ def verify_and_process_image(image_path: str, logger_instance: logging.Logger) -
         logger_instance.error(f"Image verification failed for {image_path}", exc_info=True); return False
 
 def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, logger_instance: logging.Logger):
+    header_row = int(header_row)
     wb = load_workbook(local_filename)
     ws = wb.active
     image_map = {int(Path(f).stem): f for f in os.listdir(temp_dir) if Path(f).stem.isdigit()}
@@ -376,7 +377,7 @@ def write_excel_generic(local_filename: str, temp_dir: str, header_row: int, row
             image_path = os.path.join(temp_dir, image_file)
             if verify_and_process_image(image_path, logger_instance):
                 img = Image(image_path)
-                adjusted_row = row_id + header_row + row_offset + 1
+                adjusted_row = row_id + header_row + row_offset 
                 img.anchor = f"A{adjusted_row}"; ws.add_image(img)
         logger_instance.info("Setting worksheet view to A1.")
         wb.save(local_filename)
