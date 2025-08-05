@@ -55,9 +55,18 @@ if app_config:
     SENDER_EMAIL = app_config.get('email_settings', {}).get('sender_email', 'nik@luxurymarket.com')
     SENDER_PASSWORD = app_config.get('email_settings', {}).get('sender_password', 'wvug kynd dfhd xrjh')
     SENDER_NAME = app_config.get('email_settings', {}).get('sender_name', 'superscraper')
+    S3_CONFIG = app_config.get('s3_config', {
+        "endpoint": "https://s3.us-east-2.amazonaws.com",
+        "region": "us-east-2",
+        "access_key": "AKIA2CUNLEV6V627SWI7",
+        "secret_key": "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",
+        "bucket_name": "iconluxurygroup",
+        "r2_endpoint": "https://97d91ece470eb7b9aa71ca0c781cfacc.r2.cloudflarestorage.com",
+        "r2_access_key": "5547ff7ffb8f3b16a15d6f38322cd8bd",
+        "r2_secret_key": "771014b01093eceb212dfea5eec0673842ca4a39456575ca7ff43f768cf42978",
+        "r2_account_id": "97d91ece470eb7b9aa71ca0c781cfacc",
+        "r2_bucket_name": "iconluxurygroup",
+        "r2_custom_domain": "https://iconluxury.shop",
+    })
 else:
     logger.error("Failed to load configuration. Using fallback values.")
-    VERSION = "3.8.6"
-    SENDER_EMAIL = "nik@luxurymarket.com"
-    SENDER_PASSWORD = "wvug kynd dfhd xrjh"
-    SENDER_NAME = "superscraper"
