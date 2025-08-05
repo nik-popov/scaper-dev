@@ -82,9 +82,6 @@ import logging
 import pandas as pd
 import urllib.parse # Added for the new function
 
-# Assuming LR class is in icon_image_lib.LR; otherwise, include it directly here
-from icon_image_lib.LR import LR # Make sure this import works
-
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 # It's good practice to get a logger instance per module
 # logger = logging.getLogger(__name__) # This would be used if not passing logger around
@@ -280,43 +277,73 @@ def get_results_page_results(html_bytes, final_urls, final_descriptions, final_s
     return final_urls, final_descriptions, final_sources, final_thumbs
 
 
-def process_search_result(image_html_bytes, entry_id: int, logger=None) -> pd.DataFrame:
-    """Process search result HTML bytes and return a DataFrame with image data."""
-    logger = logger or logging.getLogger(__name__) # Ensure logger
-    # It seems image_html_bytes is used for both original and results_page_results
-    # This implies it contains all necessary data.
-    
-    # First, try to get images from the script/data block
-    final_urls, final_descriptions, final_sources, final_thumbs = get_original_images(image_html_bytes, logger)
-    
-    # Then, try to get images from structured HTML elements (if any, or as supplement)
-    # Pass the *current* lists to be appended to.
-    # final_urls, final_descriptions, final_sources, final_thumbs = get_results_page_results(
-    #     image_html_bytes, final_urls, final_descriptions, final_sources, final_thumbs, logger
-    # )
-    
-    # Ensure all lists have the same length before creating DataFrame
-    all_lists = [final_urls, final_descriptions, final_sources, final_thumbs]
-    if not all_lists: # Should not happen if functions return empty lists
-        logger.warning(f"EntryID {entry_id}: No data extracted. Returning empty DataFrame.")
-        return pd.DataFrame()
-        
-    min_len = min(len(lst) for lst in all_lists)
-    
-    # Check if any list was longer and got truncated, indicating a potential mismatch
-    if any(len(lst) > min_len for lst in all_lists):
-        logger.warning(
-            f"EntryID {entry_id}: Data lists had different lengths "
-            f"({[len(lst) for lst in all_lists]}). Truncated to min length: {min_len}."
-        )
+import logging
+import pandas as pd
 
-    df = pd.DataFrame({
-        'EntryID': [entry_id] * min_len,
-        'ImageUrl': final_urls[:min_len],
-        'ImageDesc': final_descriptions[:min_len],
-        'ImageSource': final_sources[:min_len],
-        'ImageUrlThumbnail': final_thumbs[:min_len]
-    })
-    
-    logger.info(f"Processed EntryID {entry_id} with {len(df)} images (after potential truncation).")
-    return df
+def process_search_result(image_html_bytes: bytes, entry_id: int, logger=None) -> pd.DataFrame:
+    """
+    Process HTML bytes from a search result to extract image data into a DataFrame.
+
+    Args:
+        image_html_bytes (bytes): HTML content containing image data.
+        entry_id (int): Identifier for the search result entry.
+        logger (logging.Logger, optional): Logger for debugging. Defaults to module logger.
+
+    Returns:
+        pd.DataFrame: DataFrame with columns EntryID, ImageUrl, ImageDesc, ImageSource, ImageUrlThumbnail.
+                      Returns empty DataFrame on failure.
+
+    Raises:
+        TypeError: If entry_id is not an integer or image_html_bytes is not bytes.
+    """
+    logger = logger or logging.getLogger(__name__)
+    if not logger.handlers:
+        logger.addHandler(logging.StreamHandler())
+        logger.setLevel(logging.INFO)
+
+    # Validate inputs
+    if not isinstance(image_html_bytes, bytes) or not image_html_bytes:
+        logger.error(f"EntryID {entry_id}: Invalid or empty image_html_bytes.")
+        return pd.DataFrame()
+    if not isinstance(entry_id, int):
+        logger.error(f"Invalid entry_id type: {type(entry_id)}. Expected int.")
+        return pd.DataFrame()
+
+    try:
+        # Extract image data
+        final_urls, final_descriptions, final_sources, final_thumbs = get_original_images(image_html_bytes, logger)
+        all_lists = [final_urls, final_descriptions, final_sources, final_thumbs]
+
+        # Validate return types
+        if not all(isinstance(lst, list) for lst in all_lists):
+            logger.error(f"EntryID {entry_id}: get_original_images returned invalid types: "
+                         f"{[type(lst) for lst in all_lists]}")
+            return pd.DataFrame()
+
+        # Check for empty data
+        if not any(all_lists):
+            logger.warning(f"EntryID {entry_id}: No data extracted.")
+            return pd.DataFrame()
+
+        # Align lists to max length with None padding
+        max_len = max(len(lst) for lst in all_lists)
+        if any(len(lst) != max_len for lst in all_lists):
+            logger.warning(f"EntryID {entry_id}: List lengths: URLs={len(final_urls)}, "
+                          f"Descriptions={len(final_descriptions)}, Sources={len(final_sources)}, "
+                          f"Thumbnails={len(final_thumbs)}. Padding to {max_len}.")
+
+        # Create DataFrame
+        df = pd.DataFrame({
+            'EntryID': [entry_id] * max_len,
+            'ImageUrl': (final_urls + [None] * max_len)[:max_len],
+            'ImageDesc': (final_descriptions + [None] * max_len)[:max_len],
+            'ImageSource': (final_sources + [None] * max_len)[:max_len],
+            'ImageUrlThumbnail': (final_thumbs + [None] * max_len)[:max_len]
+        })
+
+        logger.info(f"Processed EntryID {entry_id} with {len(df)} images.")
+        return df
+
+    except Exception as e:
+        logger.error(f"EntryID {entry_id}: Unexpected error: {str(e)}")
+        return pd.DataFrame()
