@@ -126,159 +126,79 @@ def decode_html_bytes(html_bytes, logger): # Your existing function
         return html_bytes.decode('utf-8', errors='replace')
 
 # The extract_true_url_from_wrapper function defined above should be here
-
 def get_original_images(html_bytes, logger=None):
-    """Extract image data from Google image search HTML."""
-    logger = logger or logging.getLogger(__name__) # Ensure logger is available
+    """Extract image data from Google image search HTML in grid order."""
+    logger = logger or logging.getLogger(__name__)
     html_content = decode_html_bytes(html_bytes, logger)
-
-    start_tag = 'FINANCE",[22,1]]]]]'
-    end_tag = ':[null,null,null,"glbl'
-    matched_google_image_data = LR().get(html_content, start_tag, end_tag)
+    soup = BeautifulSoup(html_content, 'html.parser')
     
-    if 'Error' in matched_google_image_data or not matched_google_image_data:
-        logger.warning('Main results tags not found or no data extracted (LR step)')
-        return [], [], [], []
-    
-    # This part handles \uXXXX escapes if they are Python string literals
-    thumbnails_data_str = str(matched_google_image_data).replace('\u003d', '=').replace('\u0026', '&')
-    if '"2003":' not in thumbnails_data_str:
-        logger.warning('No "2003" tag found in main thumbnails data')
-        return [], [], [], []
-    
-    # Thumbnails (usually direct, like encrypted-tbn0.gstatic.com)
-    raw_thumbs = re.findall(r'\[\"(https:\/\/encrypted-tbn0\.gstatic\.com\/images\?.*?)\",\d+,\d+\]', thumbnails_data_str)
-    main_thumbs = [clean_source_url(url) for url in raw_thumbs] # Apply uXXXX decoding
-
-    main_descriptions = re.findall(r'"2003":\[null,"[^"]*","[^"]*","(.*?)"', thumbnails_data_str)
-    
-    # Source URLs (page where image is found)
-    raw_source_urls = re.findall(r'"2003":\[null,"[^"]*","(.*?)"', thumbnails_data_str)
-    main_source_urls = []
-    for url in raw_source_urls:
-        s1 = clean_source_url(url) # Handles uXXXX literals
-        s2 = extract_true_url_from_wrapper(s1, logger) # Handles wrappers & %-decode
-        main_source_urls.append(s2)
-        
-    # Main Image URLs (should be direct image links)
-    # Regex to find image URLs; removed_thumbs is thumbnails_data_str after removing thumbnail patterns
-    removed_thumbs_data = re.sub(r'\[\"(https:\/\/encrypted-tbn0\.gstatic\.com\/images\?.*?)\",\d+,\d+\]', "", thumbnails_data_str)
-    raw_main_image_urls = re.findall(r"(?:|,),\[\"(https:|http.*?)\",\d+,\d+\]", removed_thumbs_data)
     main_image_urls = []
-    for url in raw_main_image_urls:
-        img1 = clean_source_url(url) # Handles uXXXX literals
-        img2 = extract_true_url_from_wrapper(img1, logger) # Handles wrappers & %-decode
-        img3 = clean_image_url(img2) # Strips query params from actual image URL
-        main_image_urls.append(img3)
+    main_descriptions = []
+    main_source_urls = []
+    main_thumbs = []
     
-    if not main_image_urls and main_thumbs: # Fallback if direct images not found
-        logger.info("No main_image_urls found, using main_thumbs as fallback for image URLs.")
-        # Thumbs are already processed by clean_source_url. They are less likely to be wrappers.
-        # If they need to be treated as full image URLs, they might need clean_image_url too.
-        main_image_urls = [clean_image_url(thumb_url) for thumb_url in main_thumbs]
-
-
+    # Select all metadata divs in order (matches grid sequence)
+    meta_divs = soup.select('div.rg_meta.notranslate')
+    logger.debug(f"Found {len(meta_divs)} metadata entries.")
+    
+    for div in meta_divs:
+        try:
+            # The div text is a JSON string; clean and load it
+            meta_json_str = div.text.strip()
+            # Fix any escaped unicode or quotes if present (rare, but safe)
+            meta_json_str = re.sub(r'\\u([0-9a-fA-F]{4})', lambda m: chr(int(m.group(1), 16)), meta_json_str)
+            meta_data = json.loads(meta_json_str)
+            
+            # Extract fields (keys may vary slightly by Google version; adjust if needed)
+            full_url = meta_data.get('ou', '')  # Original/full image
+            if full_url:
+                full_url = clean_source_url(full_url)
+                full_url = extract_true_url_from_wrapper(full_url, logger)
+                full_url = clean_image_url(full_url)
+                main_image_urls.append(full_url)
+            
+            desc = meta_data.get('pt', '') or meta_data.get('s', '')  # Title or snippet
+            main_descriptions.append(desc)
+            
+            source_url = meta_data.get('ru', '')  # Referring page
+            if source_url:
+                source_url = clean_source_url(source_url)
+                source_url = extract_true_url_from_wrapper(source_url, logger)
+                main_source_urls.append(source_url)
+            
+            thumb_url = meta_data.get('tu', '') or meta_data.get('st', '')  # Thumbnail (may be base64 or URL)
+            if thumb_url and thumb_url.startswith('http'):  # Ignore base64 for now
+                thumb_url = clean_source_url(thumb_url)
+                thumb_url = extract_true_url_from_wrapper(thumb_url, logger)
+                main_thumbs.append(thumb_url)
+            else:
+                main_thumbs.append('')  # Placeholder if missing
+            
+        except json.JSONDecodeError as e:
+            logger.warning(f"Failed to parse JSON in metadata div: {e}")
+            continue  # Skip malformed entries to preserve order
+    
+    # Fallback: If thumbnails are missing, extract from img tags (in order)
+    if not main_thumbs or len(main_thumbs) < len(main_image_urls):
+        logger.info("Thumbnails incomplete; falling back to img tags.")
+        img_tags = soup.select('img.rg_i.Q4LuWd')  # Thumbnail imgs in order
+        main_thumbs = []
+        for img in img_tags:
+            thumb_src = img.get('src') or img.get('data-src', '')
+            if thumb_src:
+                thumb_src = clean_source_url(thumb_src)
+                thumb_src = extract_true_url_from_wrapper(thumb_src, logger)
+                main_thumbs.append(thumb_src)
+    
+    # Align lists (should be equal now, but truncate if any mismatches)
     min_length = min(len(main_image_urls), len(main_descriptions), len(main_source_urls), len(main_thumbs))
-    # Truncate lists to the minimum common length to ensure DataFrame integrity
     main_image_urls = main_image_urls[:min_length][:5]
     main_descriptions = main_descriptions[:min_length][:5]
     main_source_urls = main_source_urls[:min_length][:5]
     main_thumbs = main_thumbs[:min_length][:5]
-
-    logger.debug(f"GetOriginal: URLs={len(main_image_urls)}, Desc={len(main_descriptions)}, Sources={len(main_source_urls)}, Thumbs={len(main_thumbs)}")
+    
+    logger.debug(f"Extracted (in order): URLs={len(main_image_urls)}, Desc={len(main_descriptions)}, Sources={len(main_source_urls)}, Thumbs={len(main_thumbs)}")
     return main_image_urls, main_descriptions, main_source_urls, main_thumbs
-
-def get_results_page_results(html_bytes, final_urls, final_descriptions, final_sources, final_thumbs, logger=None):
-    """Extract additional image data from results page HTML without base64."""
-    logger = logger or logging.getLogger(__name__) # Ensure logger
-    html_content = decode_html_bytes(html_bytes, logger)
-
-    soup = BeautifulSoup(html_content, 'html.parser')
-    # Class names for Google search results can change, verify these if issues arise
-    result_divs = soup.find_all('div', class_='H8Rx8c') # This class seems to be for "Related images" or similar blocks
-
-    if not result_divs:
-        # Try another common class for image result items if H8Rx8c fails
-        result_divs = soup.find_all('div', class_='isv motiva_DRHBO') # Example: for individual image results
-        if not result_divs:
-            result_divs = soup.find_all('a', class_='isv-r') # Another common pattern for image items
-            if not result_divs:
-                 logger.warning("No primary result item divs (H8Rx8c, isv motiva_DRHBO, isv-r) found in additional results page")
-                 return final_urls, final_descriptions, final_sources, final_thumbs
-
-    logger.info(f"Found {len(result_divs)} potential items in additional results page.")
-
-    for item_container in result_divs:
-        if len(final_urls) >= 100: # Overall cap
-            break
-
-        # Thumbnail
-        # Common img tags: 'rg_i Q4LuWd', 'n3VNCb KAlRDb', 'YQ4gaf'
-        img_tag = item_container.find('img', class_=lambda c: c and any(cls in c for cls in ['rg_i', 'n3VNCb', 'YQ4gaf', 'gdOPf', 'uhHOwf', 'ez24Df']))
-        raw_thumb_url = None
-        if img_tag:
-            raw_thumb_url = img_tag.get('src') or img_tag.get('data-src')
-        
-        if not raw_thumb_url or 'data:image' in raw_thumb_url: # Skip base64
-            logger.debug("No valid thumbnail URL or base64 src in result item, skipping.")
-            continue
-        
-        thumb = clean_source_url(raw_thumb_url) # uXXXX decode for thumb
-        # Thumbnails are usually direct, no need for extract_true_url_from_wrapper or clean_image_url
-        final_thumbs.append(thumb)
-
-        # Description
-        # Common description/title holders: 'bytUYc', 'VFACy kGQAp S2WUTe', 'mVDVAe'
-        desc_element = item_container.find(['div', 'span', 'a'], class_=lambda c: c and any(cls in c for cls in ['bytUYc', 'VFACy', 'mVDVAe', 'VwiC3b']))
-        description = desc_element.get_text(strip=True) if desc_element else 'No description'
-        final_descriptions.append(description)
-
-        # Source (often the domain name or page title linking to the source page)
-        # Common source holders: 'VuuXrf', 'SW5pqf', 'cite' with class 'qLRx3b'
-        source_element = item_container.find(['cite', 'div', 'span'], class_=lambda c: c and any(cls in c for cls in ['VuuXrf', 'SW5pqf', 'qLRx3b']))
-        raw_source_text = source_element.get_text(strip=True) if source_element else 'No source'
-        
-        # Process source text: clean uXXXX, then extract if it's a wrapper URL
-        # Check if it looks like a URL before trying to extract from wrapper
-        cleaned_source_text = clean_source_url(raw_source_text)
-        if cleaned_source_text.startswith(('http', '/', 'www.')):
-            source = extract_true_url_from_wrapper(cleaned_source_text, logger)
-        else:
-            source = cleaned_source_text # It's just text, not a URL
-        final_sources.append(source)
-
-        # Main Image URL (often found in a link wrapping the image or a data attribute)
-        # Common link tags: 'ایش zReHs', 'VFACy kGQAp S2WUTe', 'isv-r' (if item_container is this)
-        # Sometimes the link is the item_container itself if it's an <a> tag
-        link_tag = None
-        if item_container.name == 'a':
-            link_tag = item_container
-        else:
-            link_tag = item_container.find('a', class_=lambda c: c and any(cls in c for cls in ['zReHs', 'VFACy', 'isv-r']))
-
-        raw_href = link_tag.get('href') if link_tag and link_tag.get('href') else None
-        
-        # Alternative: Look for data-actualn3r (or similar) on img_tag for direct full image URL
-        if not raw_href and img_tag:
-             raw_href = img_tag.get('data-actualn3r') # This sometimes holds the direct image link
-
-        image_url_final = 'No image URL'
-        if raw_href:
-            url1 = clean_source_url(raw_href)
-            url2 = extract_true_url_from_wrapper(url1, logger)
-            image_url_final = clean_image_url(url2)
-        final_urls.append(image_url_final)
-
-    if len(final_urls) > 100: # Cap after processing
-        final_urls = final_urls[:100]
-        final_descriptions = final_descriptions[:100]
-        final_sources = final_sources[:100]
-        final_thumbs = final_thumbs[:100]
-        logger.debug("Capped total results from additional page processing at 100")
-
-    logger.debug(f"GetResultsPage: Total after append: URLs={len(final_urls)}")
-    return final_urls, final_descriptions, final_sources, final_thumbs
-
 
 def process_search_result(image_html_bytes, entry_id: int, logger=None) -> pd.DataFrame:
     """Process search result HTML bytes and return a DataFrame with image data."""
@@ -288,12 +208,6 @@ def process_search_result(image_html_bytes, entry_id: int, logger=None) -> pd.Da
     
     # First, try to get images from the script/data block
     final_urls, final_descriptions, final_sources, final_thumbs = get_original_images(image_html_bytes, logger)
-    
-    # Then, try to get images from structured HTML elements (if any, or as supplement)
-    # Pass the *current* lists to be appended to.
-    # final_urls, final_descriptions, final_sources, final_thumbs = get_results_page_results(
-    #     image_html_bytes, final_urls, final_descriptions, final_sources, final_thumbs, logger
-    # )
     
     # Ensure all lists have the same length before creating DataFrame
     all_lists = [final_urls, final_descriptions, final_sources, final_thumbs]
