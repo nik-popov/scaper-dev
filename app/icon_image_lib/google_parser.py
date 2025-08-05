@@ -242,8 +242,7 @@ def get_original_images(html_bytes: bytes, logger_instance: Optional[logging.Log
         # Log the source of the results
         valid_thumbs = len([t for t in main_thumbs if t])
         logger_instance.debug(f"Extracted: URLs={len(main_image_urls)}, Desc={len(main_descriptions)}, Sources={len(main_source_urls)}, Thumbs={valid_thumbs}")
-        logger_instance.debug(f"Results sourced from: {'img tags' if valid_thumbs > len([t for t in main_thumbs[:valid_thumbs] if t and t in [m for m in main_thumbs if m in [i.get('src') or i.get('data-src') or i.get('data-iurl') or '' for i in soup.select('img[class*="rg_i"], img[data-src], img[src], img[data-iurl]')]]) else 'metadata'}")
-        
+  
         return main_image_urls, main_descriptions, main_source_urls, main_thumbs
     except Exception as e:
         logger_instance.error(f"Critical error in get_original_images: {e}", exc_info=True)
