@@ -504,12 +504,138 @@ async def generate_download_file(file_id: str, row_offset: int = 0):
         if temp_images_dir and temp_excel_dir:
             await cleanup_temp_dirs([temp_images_dir, temp_excel_dir])
 
+def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, target_column: str, logger_instance: logging.Logger):
+    try:
+        wb = load_workbook(local_filename)
+        ws = wb.active
+        image_map = {int(Path(f).stem): f for f in os.listdir(temp_dir) if Path(f).stem.isdigit()}
+
+        # Get default row height
+        row_dim = ws.row_dimensions.get(header_row + 1)
+        DEFAULT_ROW_HEIGHT_POINTS = row_dim.height if row_dim and row_dim.height is not None else 12.75
+
+        # Create a mapping of ExcelRowID to metadata
+        row_data_map = {item['ExcelRowID']: item for item in image_data}
+
+        for row_id in sorted(row_data_map.keys()):
+            item = row_data_map[row_id]
+            row_num = row_id + header_row
+            ws.row_dimensions[row_num].height = DEFAULT_ROW_HEIGHT_POINTS
+
+            # Write image if available (Column A)
+            if row_id in image_map:
+                image_path = os.path.join(temp_dir, image_map[row_id])
+                if verify_and_process_image(image_path, logger_instance):
+                    img = Image(image_path)
+                    img.anchor = f"A{row_num}"
+                    ws.add_image(img)
+                    # Adjust row height based on image if needed
+                    img_height_pixels = img.height if hasattr(img, 'height') else 0
+                    img_height_points = img_height_pixels * 72 / 96  # Assuming 96 DPI
+                    ws.row_dimensions[row_num].height = max(DEFAULT_ROW_HEIGHT_POINTS, img_height_points)
+                    logger_instance.info(f"Added image for Row {row_id} at Excel row {row_num}, height set to {ws.row_dimensions[row_num].height} points")
+                else:
+                    logger_instance.warning(f"Image processing failed for Row {row_id}, writing MSRP only")
+            else:
+                logger_instance.info(f"No image found for Row {row_id}, writing MSRP only")
+
+            # Write MSRP to target column
+            msrp_value = item.get('MSRP', '')
+            ws.cell(row=row_num, column=column_index_from_string(target_column)).value = msrp_value
+            logger_instance.info(f"Wrote MSRP '{msrp_value}' for Row {row_id} at {target_column}{row_num}")
+
+        logger_instance.info("Setting worksheet view to A1.")
+        ws.sheet_view.topLeftCell = 'B6'
+        wb.save(local_filename)
+        logger_instance.info(f"MSRP Excel file saved: {local_filename}")
+    except Exception as e:
+        logger_instance.error(f"Error writing to MSRP Excel file: {e}", exc_info=True)
+        raise
+
+
+async def generate_msrp_excel(file_id: str, target_column: str):
+    timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+    logger_instance = setup_logging(file_id, timestamp)
+    temp_images_dir, temp_excel_dir = "", ""
+    file_id_int = int(file_id)
+
+    try:
+        user_agents = get_user_agents(logger_instance)
+        temp_images_dir, temp_excel_dir = await create_temp_dirs(file_id)
+        
+        logger_instance.info("Fetching all image and MSRP data from database...")
+        images_df = get_images_excel_db(file_id_int, logger_instance)
+        
+        if images_df.empty:
+            logger_instance.warning(f"No data found for FileID {file_id}. Fetching all records for MSRP.")
+            query = """
+                SELECT
+                    s.ExcelRowID,
+                    s.ProductMSRP AS MSRP
+                FROM utb_ImageScraperFiles f
+                INNER JOIN utb_ImageScraperRecords s ON s.FileID = f.ID 
+                WHERE f.ID = ?
+                ORDER BY s.ExcelRowID
+            """
+            images_df = pd.read_sql_query(query, engine, params=[(file_id,)])
+            if images_df.empty:
+                logger_instance.error(f"No records found for FileID {file_id}. The job cannot proceed.")
+                return
+
+        logger_instance.info("Grouping data by product to prepare for download attempts...")
+        grouped_data = []
+        for _, group in images_df.groupby('ExcelRowID'):
+            first_row = group.iloc[0]
+            image_options = list(zip(group['ImageUrl'], group['ImageUrlThumbnail'], group['SortOrder'])) if 'ImageUrl' in group.columns else []
+            
+            grouped_data.append({
+                'ExcelRowID': int(first_row['ExcelRowID']),
+                'MSRP': first_row.get('MSRP', ''),
+                'image_options': image_options
+            })
+        
+        logger_instance.info(f"Data prepared for {len(grouped_data)} unique products. Starting image downloads.")
+        if any(item['image_options'] for item in grouped_data):
+            await download_all_images(grouped_data, temp_images_dir, logger_instance, user_agents)
+        else:
+            logger_instance.info("No images to download, proceeding with MSRP only.")
+        
+        logger_instance.info("Starting MSRP file generation.")
+        file_url = get_file_location(file_id_int, logger_instance)
+        file_name = os.path.basename(urllib.parse.unquote(file_url))
+        local_filename = os.path.join(temp_excel_dir, file_name)
+
+        res = requests.get(file_url, timeout=60); res.raise_for_status()
+        with open(local_filename, "wb") as f: f.write(res.content)
+        
+        header_row = find_header_row_index(local_filename, logger_instance) or 0
+        write_excel_msrp(local_filename, temp_images_dir, grouped_data, header_row, target_column, logger_instance)
+
+        processed_file_name = f"{Path(file_name).stem}_msrp_{timestamp}.xlsx"
+        public_url = await upload_file_to_space(local_filename, save_as=f"processed_files/{processed_file_name}", file_id=file_id_int, is_public=True)
+        update_file_location_complete(file_id_int, public_url, logger_instance)
+        await send_email(to_emails='nik@iconluxurygroup.com', subject=f'MSRP File Processed: {file_name}', download_url=public_url, job_id=file_id)
+        
+        logger_instance.info(f"Successfully completed MSRP job for FileID {file_id}.")
+
+    except Exception as e:
+        logger_instance.error(f"FATAL ERROR for MSRP FileID {file_id}: {e}", exc_info=True)
+    finally:
+        if temp_images_dir and temp_excel_dir:
+            await cleanup_temp_dirs([temp_images_dir, temp_excel_dir])
+
 # --- FastAPI Endpoints ---
 @app.post("/generate-download-file/")
 async def process_file(background_tasks: BackgroundTasks, file_id: int, row_offset: Optional[int] = 0):
     logger.info(f"Received request for FileID: {file_id} with row_offset={row_offset}")
     background_tasks.add_task(generate_download_file, str(file_id), row_offset)
     return {"message": "Processing started. You will be notified upon completion."}
+
+@app.post("/generate-msrp-excel/")
+async def process_msrp_file(background_tasks: BackgroundTasks, file_id: int, target_column: str):
+    logger.info(f"Received request for MSRP FileID: {file_id} with target_column={target_column}")
+    background_tasks.add_task(generate_msrp_excel, str(file_id), target_column)
+    return {"message": "MSRP Processing started. You will be notified upon completion."}
 
 @app.get("/")
 def read_root():
