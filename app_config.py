@@ -48,3 +48,16 @@ def load_config_constants(config_url, fallback_db_password=None):
 # Fetch configuration
 CONFIG_URL = "https://iconluxury.shop/secrets/secrets_scraper_config.json"
 app_config = load_config_constants(CONFIG_URL, fallback_db_password="Ftu5675FDG54hjhiuu$")
+
+# Define variables from app_config or fallback to defaults
+if app_config:
+    VERSION = app_config.get('version', '3.8.6')
+    SENDER_EMAIL = app_config.get('email_settings', {}).get('sender_email', 'nik@luxurymarket.com')
+    SENDER_PASSWORD = app_config.get('email_settings', {}).get('sender_password', 'wvug kynd dfhd xrjh')
+    SENDER_NAME = app_config.get('email_settings', {}).get('sender_name', 'superscraper')
+else:
+    logger.error("Failed to load configuration. Using fallback values.")
+    VERSION = "3.8.6"
+    SENDER_EMAIL = "nik@luxurymarket.com"
+    SENDER_PASSWORD = "wvug kynd dfhd xrjh"
+    SENDER_NAME = "superscraper"
