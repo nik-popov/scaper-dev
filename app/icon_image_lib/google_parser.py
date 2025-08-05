@@ -126,8 +126,122 @@ def decode_html_bytes(html_bytes: bytes, logger_instance: Optional[logging.Logge
         logger_instance.error(f"Error decoding HTML bytes: {e}", exc_info=True)
         return html_bytes.decode('utf-8', errors='replace')
 
+import urllib.parse
+import logging
+from bs4 import BeautifulSoup
+import re
+import chardet
+from typing import Optional, Tuple, List
+
+# Configure logger
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+def clean_source_url(s: Optional[str]) -> Optional[str]:
+    """Clean and decode URL string by replacing encoded characters and removing query parameters."""
+    if not isinstance(s, str):
+        logger.warning(f"Invalid input type for clean_source_url: {type(s)}. Expected str, got {s}")
+        return s
+    try:
+        # Remove query parameters
+        s = re.sub(r'\?.*$', '', s).strip()
+        # Replace encoded characters
+        replacements = {
+            'u0026': '&', 'u003d': '=', 'u003f': '?', 'u0020': ' ', 'u0025': '%', 'u002b': '+', 'u003c': '<',
+            'u003e': '>', 'u0023': '#', 'u0024': '$', 'u002f': '/', 'u005c': '\\', 'u007c': '|', 'u002d': '-',
+            'u003a': ':', 'u003b': ';', 'u002c': ',', 'u002e': '.', 'u0021': '!', 'u0040': '@', 'u005e': '^',
+            'u0060': '`', 'u007b': '{', 'u007d': '}', 'u005b': '[', 'u005d': ']', 'u002a': '*', 'u0028': '(',
+            'u0029': ')'
+        }
+        for encoded, decoded in replacements.items():
+            s = s.replace(encoded, decoded).replace('\\\\', '')
+        logger.debug(f"Cleaned URL: {s}")
+        return s
+    except Exception as e:
+        logger.error(f"Error cleaning URL '{s}': {e}", exc_info=True)
+        return s
+
+def clean_image_url(url: Optional[str]) -> Optional[str]:
+    """Extract the base image URL without query parameters if it matches image extensions."""
+    if not isinstance(url, str):
+        logger.warning(f"Invalid input type for clean_image_url: {type(url)}. Expected str, got {url}")
+        return url
+    try:
+        pattern = re.compile(r'(.*\.(?:png|jpg|jpeg|gif|webp|avif|svg))(?:\?.*)?', re.IGNORECASE)
+        match = pattern.match(url)
+        cleaned_url = match.group(1) if match else ''
+        if cleaned_url and cleaned_url != url:
+            logger.debug(f"Cleaned image URL: {cleaned_url} (from {url})")
+        return cleaned_url if cleaned_url else ''
+    except Exception as e:
+        logger.error(f"Error cleaning image URL '{url}': {e}", exc_info=True)
+        return ''
+
+def extract_true_url_from_wrapper(url_string: Optional[str], logger_instance: Optional[logging.Logger] = None) -> Optional[str]:
+    """Extracts the true target URL from known wrapper URL patterns."""
+    logger_instance = logger_instance or logger
+    if not isinstance(url_string, str) or not url_string:
+        logger_instance.warning(f"Invalid or empty URL in extract_true_url_from_wrapper: {url_string}")
+        return url_string
+    try:
+        parsed = urllib.parse.urlparse(url_string)
+        query_params = urllib.parse.parse_qs(parsed.query)
+        # Next.js _next/image wrapper
+        if parsed.path.endswith("/_next/image") and 'url' in query_params:
+            inner_url = query_params['url'][0]
+            logger_instance.debug(f"Extracted from _next/image wrapper: {inner_url} (from {url_string})")
+            return urllib.parse.unquote_plus(inner_url)
+        # Google wrapper
+        is_google_domain = parsed.netloc.startswith(('www.google.', 'images.google.'))
+        is_relative_google_path = parsed.netloc == '' and parsed.path in ('/url', '/imgres')
+        if is_google_domain or is_relative_google_path:
+            target_param_key = next((k for k in ['url', 'q', 'imgurl'] if k in query_params), None)
+            if target_param_key and query_params[target_param_key]:
+                inner_url = query_params[target_param_key][0]
+                logger_instance.debug(f"Extracted from Google wrapper (param '{target_param_key}'): {inner_url} (from {url_string})")
+                return urllib.parse.unquote_plus(inner_url)
+        # Unquote non-wrapper URL
+        final_url = urllib.parse.unquote_plus(url_string)
+        if final_url != url_string:
+            logger_instance.debug(f"Unquoted non-wrapper URL: {final_url} (from {url_string})")
+        return final_url
+    except Exception as e:
+        logger_instance.error(f"Error extracting URL from wrapper '{url_string}': {e}", exc_info=True)
+        try:
+            return urllib.parse.unquote_plus(url_string)
+        except Exception:
+            return url_string
+
+def decode_html_bytes(html_bytes: bytes, logger_instance: Optional[logging.Logger] = None) -> str:
+    """Decode HTML bytes to string with fallback encoding."""
+    logger_instance = logger_instance or logger
+    if not isinstance(html_bytes, bytes):
+        logger_instance.error(f"Invalid input type for decode_html_bytes: {type(html_bytes)}. Expected bytes")
+        return ""
+    try:
+        detected = chardet.detect(html_bytes)
+        encoding = detected['encoding'] or 'utf-8'
+        confidence = detected.get('confidence', 0.0)
+        if confidence < 0.7:  # Low confidence, try common encodings
+            for enc in [encoding, 'utf-8', 'iso-8859-1', 'windows-1252']:
+                try:
+                    decoded = html_bytes.decode(enc, errors='replace')
+                    logger_instance.debug(f"Decoded HTML with encoding: {enc} (confidence: {confidence:.2f})")
+                    return decoded
+                except UnicodeDecodeError:
+                    continue
+        decoded = html_bytes.decode(encoding, errors='replace')
+        logger_instance.debug(f"Decoded HTML with encoding: {encoding} (confidence: {confidence:.2f})")
+        return decoded
+    except Exception as e:
+        logger_instance.error(f"Error decoding HTML bytes: {e}", exc_info=True)
+        return html_bytes.decode('utf-8', errors='replace')
+
 def get_original_images(html_bytes: bytes, logger_instance: Optional[logging.Logger] = None) -> Tuple[List[str], List[str], List[str], List[str]]:
-    """Extract image data from Google image search HTML in grid order."""
+    """Extract image data from Google image search HTML in grid order, excluding social media icons."""
     logger_instance = logger_instance or logger
     if not html_bytes:
         logger_instance.warning("Empty HTML bytes provided to get_original_images")
@@ -136,6 +250,20 @@ def get_original_images(html_bytes: bytes, logger_instance: Optional[logging.Log
         html_content = decode_html_bytes(html_bytes, logger_instance)
         soup = BeautifulSoup(html_content, 'html.parser')
         main_image_urls, main_descriptions, main_source_urls, main_thumbs = [], [], [], []
+        
+        # Social media icon patterns to exclude
+        social_media_patterns = [
+            r'facebook\.com.*\.(png|jpg|jpeg|gif|webp|avif|svg)',
+            r'twitter\.com.*\.(png|jpg|jpeg|gif|webp|avif|svg)',
+            r'instagram\.com.*\.(png|jpg|jpeg|gif|webp|avif|svg)',
+            r'linkedin\.com.*\.(png|jpg|jpeg|gif|webp|avif|svg)',
+            r'pinterest\.com.*\.(png|jpg|jpeg|gif|webp|avif|svg)',
+            r'\.ico$',  # Favicon files
+            r'logo\.(png|jpg|jpeg|gif|webp|avif|svg)',  # Generic logo files
+            r'share\.(png|jpg|jpeg|gif|webp|avif|svg)',  # Share icons
+            r'icon\.(png|jpg|jpeg|gif|webp|avif|svg)'   # Generic icon files
+        ]
+        
         # Process metadata divs
         meta_divs = soup.select('div[data-ved]')
         logger_instance.debug(f"Found {len(meta_divs)} potential metadata entries")
@@ -150,6 +278,10 @@ def get_original_images(html_bytes: bytes, logger_instance: Optional[logging.Log
                 # Image URL
                 full_url = params.get('imgurl', [''])[0]
                 if full_url:
+                    # Check if URL matches social media icon patterns
+                    if any(re.search(pattern, full_url, re.IGNORECASE) for pattern in social_media_patterns):
+                        logger_instance.debug(f"Skipping social media icon URL: {full_url}")
+                        continue
                     full_url = clean_source_url(full_url)
                     full_url = extract_true_url_from_wrapper(full_url, logger_instance)
                     full_url = clean_image_url(full_url)
@@ -168,6 +300,10 @@ def get_original_images(html_bytes: bytes, logger_instance: Optional[logging.Log
                 img_tag = img_link.select_one('img.YQ4gaf')
                 thumb_src = img_tag.get('src') or img_tag.get('data-src') or img_tag.get('data-iurl') or '' if img_tag else ''
                 if thumb_src and not thumb_src.startswith('data:image'):
+                    # Check if thumbnail URL matches social media icon patterns
+                    if any(re.search(pattern, thumb_src, re.IGNORECASE) for pattern in social_media_patterns):
+                        logger_instance.debug(f"Skipping social media icon thumbnail: {thumb_src}")
+                        continue
                     thumb_src = clean_source_url(thumb_src)
                     thumb_src = extract_true_url_from_wrapper(thumb_src, logger_instance)
                     thumb_src = clean_image_url(thumb_src) or full_url  # Fallback to main URL if thumbnail invalid
@@ -180,6 +316,7 @@ def get_original_images(html_bytes: bytes, logger_instance: Optional[logging.Log
             except Exception as e:
                 logger_instance.error(f"Error processing metadata div {idx}: {e}", exc_info=True)
                 continue
+        
         # Fallback to img tags if no valid results
         if not main_image_urls:
             logger_instance.info("No images from metadata; falling back to img tags")
@@ -188,6 +325,10 @@ def get_original_images(html_bytes: bytes, logger_instance: Optional[logging.Log
                 try:
                     thumb_src = img.get('src') or img.get('data-src') or img.get('data-iurl') or ''
                     if thumb_src and not thumb_src.startswith('data:image') and any(thumb_src.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp']):
+                        # Check if URL matches social media icon patterns
+                        if any(re.search(pattern, thumb_src, re.IGNORECASE) for pattern in social_media_patterns):
+                            logger_instance.debug(f"Skipping social media icon thumbnail in fallback: {thumb_src}")
+                            continue
                         thumb_src = clean_source_url(thumb_src)
                         thumb_src = extract_true_url_from_wrapper(thumb_src, logger_instance)
                         thumb_src = clean_image_url(thumb_src)
@@ -199,20 +340,19 @@ def get_original_images(html_bytes: bytes, logger_instance: Optional[logging.Log
                 except Exception as e:
                     logger_instance.error(f"Error processing img tag {idx}: {e}", exc_info=True)
                     continue
-        # Limit to top 5 results
+        
+        # Ensure all rows are processed by not limiting results
         min_length = min(len(main_image_urls), len(main_descriptions), len(main_source_urls), len(main_thumbs))
-        main_image_urls = main_image_urls[:min_length][:5]
-        main_descriptions = main_descriptions[:min_length][:5]
-        main_source_urls = main_source_urls[:min_length][:5]
-        main_thumbs = main_thumbs[:min_length][:5]
+        main_image_urls = main_image_urls[:min_length]
+        main_descriptions = main_descriptions[:min_length]
+        main_source_urls = main_source_urls[:min_length]
+        main_thumbs = main_thumbs[:min_length]
         logger_instance.debug(f"Extracted: URLs={len(main_image_urls)}, Desc={len(main_descriptions)}, Sources={len(main_source_urls)}, Thumbs={len(main_thumbs)}")
         return main_image_urls, main_descriptions, main_source_urls, main_thumbs
     except Exception as e:
         logger_instance.error(f"Critical error in get_original_images: {e}", exc_info=True)
         return [], [], [], []
     
-
-
 def process_search_result(image_html_bytes: bytes, entry_id: int, logger_instance: Optional[logging.Logger] = None) -> pd.DataFrame:
     """Process search result HTML bytes and return a DataFrame with image data."""
     logger_instance = logger_instance or logger
