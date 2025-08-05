@@ -1,6 +1,10 @@
 import urllib.parse
 import logging # Assuming logging is already configured
-
+import json
+from bs4 import BeautifulSoup
+import logging
+import re  # For minor cleanups if needed
+import urllib.parse
 # Make sure this logger is accessible or passed appropriately
 # For simplicity, defining a logger here, but ideally use the one passed down
 module_logger = logging.getLogger(__name__) # Or use the logger passed as param
