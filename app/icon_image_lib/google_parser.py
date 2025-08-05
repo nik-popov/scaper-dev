@@ -266,7 +266,7 @@ def extract_true_url_from_wrapper(url: str, logger_instance: logging.Logger) -> 
         logger_instance.warning(f"Failed to extract true URL: {e}")
         return url
 
-def process_search_result(image_html_bytes: bytes, entry_id: int, logger_instance: Optional[logging.Logger] = None) -> pd.DataFrame:
+def process_search_result(image_html_bytes: bytes, entry_id: int, logger_instance: Optional[logging.Logger] = None, save_to_file: Optional[str] = None) -> pd.DataFrame:
     """Process search result HTML bytes and return a DataFrame with image data."""
     logger_instance = logger_instance or logger
     if not isinstance(image_html_bytes, bytes):
@@ -275,22 +275,18 @@ def process_search_result(image_html_bytes: bytes, entry_id: int, logger_instanc
     if not isinstance(entry_id, int):
         logger_instance.error(f"Invalid entry_id type: {type(entry_id)}. Expected int")
         return pd.DataFrame()
-
     try:
         final_urls, final_descriptions, final_sources, final_thumbs = get_original_images(image_html_bytes, logger_instance)
-        
         if not final_urls:
             logger_instance.warning(f"EntryID {entry_id}: No images extracted")
             return pd.DataFrame()
-        
-        min_len = min(len(lst) for lst in [final_urls, final_descriptions, final_sources, final_thumbs])
-        if any(len(lst) > min_len for lst in [final_urls, final_descriptions, final_sources, final_thumbs]):
+        # Ensure consistent lengths
+        lengths = [len(final_urls), len(final_descriptions), len(final_sources), len(final_thumbs)]
+        min_len = min(lengths)
+        if any(l != min_len for l in lengths):
             logger_instance.warning(
-                f"EntryID {entry_id}: Data lists had different lengths "
-                f"({[len(lst) for lst in [final_urls, final_descriptions, final_sources, final_thumbs]]}). "
-                f"Truncated to min length: {min_len}"
+                f"EntryID {entry_id}: Data lists had different lengths {lengths}. Truncated to min length: {min_len}"
             )
-        
         df = pd.DataFrame({
             'EntryID': [entry_id] * min_len,
             'ImageUrl': final_urls[:min_len],
@@ -298,7 +294,18 @@ def process_search_result(image_html_bytes: bytes, entry_id: int, logger_instanc
             'ImageSource': final_sources[:min_len],
             'ImageUrlThumbnail': final_thumbs[:min_len]
         })
-        
+        # Remove rows with empty ImageUrl
+        df = df[df['ImageUrl'].str.strip() != '']
+        if df.empty:
+            logger_instance.warning(f"EntryID {entry_id}: No valid images after filtering")
+            return pd.DataFrame()
+        # Save to CSV if requested
+        if save_to_file:
+            try:
+                df.to_csv(save_to_file, mode='a', index=False, header=not pd.io.common.file_exists(save_to_file))
+                logger_instance.info(f"EntryID {entry_id}: Saved {len(df)} images to {save_to_file}")
+            except Exception as e:
+                logger_instance.error(f"EntryID {entry_id}: Failed to save to {save_to_file}: {e}", exc_info=True)
         logger_instance.info(f"Processed EntryID {entry_id} with {len(df)} images")
         return df
     except Exception as e:
