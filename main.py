@@ -17,6 +17,7 @@ from aiohttp_retry import RetryClient, ExponentialRetry
 from fastapi import FastAPI, BackgroundTasks
 from openpyxl import load_workbook
 from openpyxl.drawing.image import Image
+from openpyxl.utils import column_index_from_string  # Add this import
 from PIL import Image as PILImage
 from PIL import UnidentifiedImageError
 from tldextract import tldextract
@@ -27,7 +28,6 @@ from collections import Counter
 import re
 import random
 from functools import partial
-
 # --- Production Imports ---
 # These are assumed to be in your project structure
 from app_config import engine, conn_str
