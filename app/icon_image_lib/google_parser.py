@@ -115,16 +115,22 @@ def decode_html_bytes(html_bytes: bytes, logger_instance: Optional[logging.Logge
     except Exception as e:
         logger_instance.error(f"Error decoding HTML bytes: {e}", exc_info=True)
         return html_bytes.decode('utf-8', errors='replace')
+import json
+import re
+import logging
+from typing import List, Tuple, Optional
+from bs4 import BeautifulSoup
 
 def get_original_images(html_bytes: bytes, logger_instance: Optional[logging.Logger] = None) -> Tuple[List[str], List[str], List[str], List[str]]:
     """Extract image data from Google image search HTML in grid order."""
-    logger_instance = logger_instance or logger
+    logger_instance = logger_instance or logging.getLogger(__name__)
     if not html_bytes:
         logger_instance.warning("Empty HTML bytes provided to get_original_images")
         return [], [], [], []
 
     try:
-        html_content = decode_html_bytes(html_bytes, logger_instance)
+        # Decode HTML bytes to string
+        html_content = html_bytes.decode('utf-8', errors='ignore')
         soup = BeautifulSoup(html_content, 'html.parser')
         
         main_image_urls = []
@@ -132,32 +138,40 @@ def get_original_images(html_bytes: bytes, logger_instance: Optional[logging.Log
         main_source_urls = []
         main_thumbs = []
         
-        meta_divs = soup.select('div.rg_meta.notranslate')
-        logger_instance.debug(f"Found {len(meta_divs)} metadata entries")
+        # Attempt to find metadata divs with a more flexible selector
+        meta_divs = soup.select('div[class*="meta"][class*="notranslate"], div[data-ved]')
+        logger_instance.debug(f"Found {len(meta_divs)} potential metadata entries")
         
         for idx, div in enumerate(meta_divs):
             try:
-                meta_json_str = div.text.strip()
+                # Extract and clean JSON-like text from div
+                meta_json_str = div.get('data-ved') or div.text.strip()
+                if not meta_json_str:
+                    continue
                 meta_json_str = re.sub(r'\\u([0-9a-fA-F]{4})', lambda m: chr(int(m.group(1), 16)), meta_json_str)
-                meta_data = json.loads(meta_json_str)
+                meta_data = json.loads(meta_json_str, strict=False)
                 
-                full_url = meta_data.get('ou', '')
+                # Extract image URL with fallback keys
+                full_url = meta_data.get('ou') or meta_data.get('imgurl') or ''
                 if full_url:
                     full_url = clean_source_url(full_url)
                     full_url = extract_true_url_from_wrapper(full_url, logger_instance)
                     full_url = clean_image_url(full_url)
                     main_image_urls.append(full_url)
                 
-                desc = meta_data.get('pt', '') or meta_data.get('s', '')
+                # Extract description with fallback keys
+                desc = meta_data.get('pt') or meta_data.get('s') or meta_data.get('alt') or ''
                 main_descriptions.append(desc)
                 
-                source_url = meta_data.get('ru', '')
+                # Extract source URL with fallback keys
+                source_url = meta_data.get('ru') or meta_data.get('sru') or ''
                 if source_url:
                     source_url = clean_source_url(source_url)
                     source_url = extract_true_url_from_wrapper(source_url, logger_instance)
                     main_source_urls.append(source_url)
                 
-                thumb_url = meta_data.get('tu', '') or meta_data.get('st', '')
+                # Extract thumbnail URL with fallback keys
+                thumb_url = meta_data.get('tu') or meta_data.get('st') or meta_data.get('tbn') or ''
                 if thumb_url and thumb_url.startswith('http'):
                     thumb_url = clean_source_url(thumb_url)
                     thumb_url = extract_true_url_from_wrapper(thumb_url, logger_instance)
@@ -178,14 +192,13 @@ def get_original_images(html_bytes: bytes, logger_instance: Optional[logging.Log
                 main_source_urls.append('')
                 main_thumbs.append('')
         
-        # Fallback to img tags
+        # Fallback to img tags with a more flexible selector
         if not any(main_thumbs) or len([t for t in main_thumbs if t]) < len(main_image_urls):
             logger_instance.info("Thumbnails incomplete; falling back to img tags")
-            img_tags = soup.select('img.rg_i.Q4LuWd')
-            main_thumbs = []
+            img_tags = soup.select('img[class*="rg_i"], img[data-src], img[src]')
             for idx, img in enumerate(img_tags):
                 try:
-                    thumb_src = img.get('src') or img.get('data-src', '')
+                    thumb_src = img.get('src') or img.get('data-src') or img.get('data-iurl') or ''
                     if thumb_src:
                         thumb_src = clean_source_url(thumb_src)
                         thumb_src = extract_true_url_from_wrapper(thumb_src, logger_instance)
@@ -196,6 +209,7 @@ def get_original_images(html_bytes: bytes, logger_instance: Optional[logging.Log
                     logger_instance.error(f"Error processing img tag {idx}: {e}", exc_info=True)
                     main_thumbs.append('')
         
+        # Ensure consistent list lengths and limit to top 5 results
         min_length = min(len(main_image_urls), len(main_descriptions), len(main_source_urls), len(main_thumbs))
         main_image_urls = main_image_urls[:min_length][:5]
         main_descriptions = main_descriptions[:min_length][:5]
@@ -208,6 +222,33 @@ def get_original_images(html_bytes: bytes, logger_instance: Optional[logging.Log
         logger_instance.error(f"Critical error in get_original_images: {e}", exc_info=True)
         return [], [], [], []
 
+def clean_source_url(url: str) -> str:
+    """Clean URL by removing unnecessary parameters."""
+    try:
+        return re.sub(r'\?.*$', '', url).strip()
+    except Exception:
+        return url
+
+def clean_image_url(url: str) -> str:
+    """Clean image URL by ensuring it points to a valid image."""
+    try:
+        if not url.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp')):
+            return ''
+        return url
+    except Exception:
+        return url
+
+def extract_true_url_from_wrapper(url: str, logger_instance: logging.Logger) -> str:
+    """Extract the true URL from Google's wrapper URLs."""
+    try:
+        match = re.search(r'imgurl=([^&]+)', url)
+        if match:
+            from urllib.parse import unquote
+            return unquote(match.group(1))
+        return url
+    except Exception as e:
+        logger_instance.warning(f"Failed to extract true URL: {e}")
+        return url
 def process_search_result(image_html_bytes: bytes, entry_id: int, logger_instance: Optional[logging.Logger] = None) -> pd.DataFrame:
     """Process search result HTML bytes and return a DataFrame with image data."""
     logger_instance = logger_instance or logger
