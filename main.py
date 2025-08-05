@@ -615,7 +615,12 @@ async def generate_msrp_excel(file_id: str, target_column: str):
         processed_file_name = f"{Path(file_name).stem}_msrp_{timestamp}.xlsx"
         public_url = await upload_file_to_space(local_filename, save_as=f"processed_files/{processed_file_name}", file_id=file_id_int, is_public=True)
         update_file_location_complete(file_id_int, public_url, logger_instance)
-        await send_email(to_emails='nik@iconluxurygroup.com', subject=f'MSRP File Processed: {file_name}', download_url=public_url, job_id=file_id)
+        await send_email(
+    to_emails='nik@iconluxurygroup.com',
+    subject=f'MSRP File Processed: {file_name}',
+    file_path=local_filename,
+    job_id=file_id
+)
         
         logger_instance.info(f"Successfully completed MSRP job for FileID {file_id}.")
 
