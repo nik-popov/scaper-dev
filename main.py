@@ -121,16 +121,20 @@ def get_file_type_id(file_id: int, logger_instance: logging.Logger) -> Optional[
         logger_instance.info(f"FileTypeID for {file_id} is {result[0] if result else 'Not Found'}")
         return result[0] if result else None
 
-def get_file_location(file_id: int, logger_instance: logging.Logger) -> str:
-    """Retrieve the source file location URL from the database."""
+def get_file_location_and_header(file_id: int, logger_instance: logging.Logger) -> Tuple[str, Optional[int]]:
+    """Retrieve the source file location URL and header row index from the database."""
     with pyodbc.connect(conn_str) as connection:
         cursor = connection.cursor()
-        query = "SELECT FileLocationUrl FROM utb_ImageScraperFiles WHERE ID = ?"
+        query = "SELECT FileLocationUrl, UserHeaderIndex FROM utb_ImageScraperFiles WHERE ID = ?"
         cursor.execute(query, (file_id,))
         result = cursor.fetchone()
         if not result:
             raise FileNotFoundError(f"No file location found in DB for FileID {file_id}")
-        return result[0]
+        file_location = result[0]
+        header_row = result[1]
+        logger_instance.info(f"FileLocationUrl for FileID {file_id}: {file_location}")
+        logger_instance.info(f"UserHeaderIndex for FileID {file_id}: {header_row if header_row is not None else 'Not Found'}")
+        return file_location, header_row
 
 def get_images_excel_db(file_id: int, logger_instance: logging.Logger) -> pd.DataFrame:
     """
@@ -515,12 +519,14 @@ async def generate_download_file(file_id: str, row_offset: int = 0):
         file_type_id = get_file_type_id(file_id_int, logger_instance)
         FILE_TYPE_DISTRO = 3
 
+        file_url, header_row_from_db = get_file_location_and_header(file_id_int, logger_instance)
+
         if file_type_id == FILE_TYPE_DISTRO:
             logger_instance.info("Starting DISTRO file generation.")
             template_url = "https://iconluxury.shop/documents/public_ICON_DISTRO_USD_20250617.xlsx"
             file_name = os.path.basename(urllib.parse.unquote(template_url))
             local_filename = os.path.join(temp_excel_dir, file_name)
-            header_row = 5
+            header_row = 5  # Hardcoded for DISTRO, override DB if needed
 
             res = requests.get(template_url, timeout=60); res.raise_for_status()
             with open(local_filename, "wb") as f: f.write(res.content)
@@ -528,14 +534,13 @@ async def generate_download_file(file_id: str, row_offset: int = 0):
             write_excel_distro(local_filename, temp_images_dir, grouped_data, header_row, logger_instance)
         else:
             logger_instance.info("Starting GENERIC file generation.")
-            file_url = get_file_location(file_id_int, logger_instance)
             file_name = os.path.basename(urllib.parse.unquote(file_url))
             local_filename = os.path.join(temp_excel_dir, file_name)
 
             res = requests.get(file_url, timeout=60); res.raise_for_status()
             with open(local_filename, "wb") as f: f.write(res.content)
             
-            header_row = find_header_row_index(local_filename, logger_instance) or 0
+            header_row = header_row_from_db if header_row_from_db is not None else find_header_row_index(local_filename, logger_instance) or 0
             write_excel_generic(local_filename, temp_images_dir, header_row, row_offset, logger_instance)
 
         processed_file_name = f"{Path(file_name).stem}_processed_{timestamp}.xlsx"
@@ -604,14 +609,14 @@ async def generate_msrp_excel(file_id: str, target_column: str, row_offset: int 
             logger_instance.info("No images to download, proceeding with MSRP only.")
         
         logger_instance.info("Starting MSRP file generation.")
-        file_url = get_file_location(file_id_int, logger_instance)
+        file_url, header_row_from_db = get_file_location_and_header(file_id_int, logger_instance)
         file_name = os.path.basename(urllib.parse.unquote(file_url))
         local_filename = os.path.join(temp_excel_dir, file_name)
 
         res = requests.get(file_url, timeout=60); res.raise_for_status()
         with open(local_filename, "wb") as f: f.write(res.content)
         
-        header_row = find_header_row_index(local_filename, logger_instance) or 0
+        header_row = header_row_from_db if header_row_from_db is not None else find_header_row_index(local_filename, logger_instance) or 0
         write_excel_msrp(local_filename, temp_images_dir, grouped_data, header_row, target_column, row_offset, logger_instance)
 
         processed_file_name = f"{Path(file_name).stem}_msrp_{timestamp}.xlsx"
