@@ -121,6 +121,12 @@ import logging
 from typing import List, Tuple, Optional
 from bs4 import BeautifulSoup
 
+import json
+import re
+import logging
+from typing import List, Tuple, Optional
+from bs4 import BeautifulSoup
+
 def get_original_images(html_bytes: bytes, logger_instance: Optional[logging.Logger] = None) -> Tuple[List[str], List[str], List[str], List[str]]:
     """Extract image data from Google image search HTML in grid order."""
     logger_instance = logger_instance or logging.getLogger(__name__)
@@ -138,18 +144,37 @@ def get_original_images(html_bytes: bytes, logger_instance: Optional[logging.Log
         main_source_urls = []
         main_thumbs = []
         
-        # Attempt to find metadata divs with a more flexible selector
+        # Attempt to find metadata divs with a flexible selector
         meta_divs = soup.select('div[class*="meta"][class*="notranslate"], div[data-ved]')
         logger_instance.debug(f"Found {len(meta_divs)} potential metadata entries")
         
         for idx, div in enumerate(meta_divs):
             try:
-                # Extract and clean JSON-like text from div
+                # Extract and clean text content
                 meta_json_str = div.get('data-ved') or div.text.strip()
                 if not meta_json_str:
+                    logger_instance.debug(f"Empty metadata in div {idx}")
                     continue
+                
+                # Clean Unicode escape sequences
                 meta_json_str = re.sub(r'\\u([0-9a-fA-F]{4})', lambda m: chr(int(m.group(1), 16)), meta_json_str)
-                meta_data = json.loads(meta_json_str, strict=False)
+                
+                # Attempt to extract the first valid JSON object
+                try:
+                    # Find the first '{' and last '}' to isolate potential JSON
+                    start = meta_json_str.find('{')
+                    end = meta_json_str.rfind('}') + 1
+                    if start == -1 or end == 0:
+                        raise json.JSONDecodeError("No valid JSON object found", meta_json_str, 0)
+                    meta_json_str = meta_json_str[start:end]
+                    meta_data = json.loads(meta_json_str, strict=False)
+                except json.JSONDecodeError as e:
+                    logger_instance.warning(f"Failed to parse JSON in metadata div {idx}: {e}. Raw content: {meta_json_str[:100]}...")
+                    main_image_urls.append('')
+                    main_descriptions.append('')
+                    main_source_urls.append('')
+                    main_thumbs.append('')
+                    continue
                 
                 # Extract image URL with fallback keys
                 full_url = meta_data.get('ou') or meta_data.get('imgurl') or ''
@@ -158,6 +183,8 @@ def get_original_images(html_bytes: bytes, logger_instance: Optional[logging.Log
                     full_url = extract_true_url_from_wrapper(full_url, logger_instance)
                     full_url = clean_image_url(full_url)
                     main_image_urls.append(full_url)
+                else:
+                    main_image_urls.append('')
                 
                 # Extract description with fallback keys
                 desc = meta_data.get('pt') or meta_data.get('s') or meta_data.get('alt') or ''
@@ -169,6 +196,8 @@ def get_original_images(html_bytes: bytes, logger_instance: Optional[logging.Log
                     source_url = clean_source_url(source_url)
                     source_url = extract_true_url_from_wrapper(source_url, logger_instance)
                     main_source_urls.append(source_url)
+                else:
+                    main_source_urls.append('')
                 
                 # Extract thumbnail URL with fallback keys
                 thumb_url = meta_data.get('tu') or meta_data.get('st') or meta_data.get('tbn') or ''
@@ -179,12 +208,6 @@ def get_original_images(html_bytes: bytes, logger_instance: Optional[logging.Log
                 else:
                     main_thumbs.append('')
                     
-            except json.JSONDecodeError as e:
-                logger_instance.warning(f"Failed to parse JSON in metadata div {idx}: {e}")
-                main_image_urls.append('')
-                main_descriptions.append('')
-                main_source_urls.append('')
-                main_thumbs.append('')
             except Exception as e:
                 logger_instance.error(f"Error processing metadata div {idx}: {e}", exc_info=True)
                 main_image_urls.append('')
@@ -192,10 +215,10 @@ def get_original_images(html_bytes: bytes, logger_instance: Optional[logging.Log
                 main_source_urls.append('')
                 main_thumbs.append('')
         
-        # Fallback to img tags with a more flexible selector
-        if not any(main_thumbs) or len([t for t in main_thumbs if t]) < len(main_image_urls):
+        # Fallback to img tags if thumbnails are incomplete
+        if not any(main_thumbs) or len([t for t in main_thumbs if t]) < len([u for u in main_image_urls if u]):
             logger_instance.info("Thumbnails incomplete; falling back to img tags")
-            img_tags = soup.select('img[class*="rg_i"], img[data-src], img[src]')
+            img_tags = soup.select('img[class*="rg_i"], img[data-src], img[src], img[data-iurl]')
             for idx, img in enumerate(img_tags):
                 try:
                     thumb_src = img.get('src') or img.get('data-src') or img.get('data-iurl') or ''
@@ -216,7 +239,11 @@ def get_original_images(html_bytes: bytes, logger_instance: Optional[logging.Log
         main_source_urls = main_source_urls[:min_length][:5]
         main_thumbs = main_thumbs[:min_length][:5]
         
-        logger_instance.debug(f"Extracted: URLs={len(main_image_urls)}, Desc={len(main_descriptions)}, Sources={len(main_source_urls)}, Thumbs={len(main_thumbs)}")
+        # Log the source of the results
+        valid_thumbs = len([t for t in main_thumbs if t])
+        logger_instance.debug(f"Extracted: URLs={len(main_image_urls)}, Desc={len(main_descriptions)}, Sources={len(main_source_urls)}, Thumbs={valid_thumbs}")
+        logger_instance.debug(f"Results sourced from: {'img tags' if valid_thumbs > len([t for t in main_thumbs[:valid_thumbs] if t and t in [m for m in main_thumbs if m in [i.get('src') or i.get('data-src') or i.get('data-iurl') or '' for i in soup.select('img[class*="rg_i"], img[data-src], img[src], img[data-iurl]')]]) else 'metadata'}")
+        
         return main_image_urls, main_descriptions, main_source_urls, main_thumbs
     except Exception as e:
         logger_instance.error(f"Critical error in get_original_images: {e}", exc_info=True)
@@ -249,6 +276,7 @@ def extract_true_url_from_wrapper(url: str, logger_instance: logging.Logger) -> 
     except Exception as e:
         logger_instance.warning(f"Failed to extract true URL: {e}")
         return url
+
 def process_search_result(image_html_bytes: bytes, entry_id: int, logger_instance: Optional[logging.Logger] = None) -> pd.DataFrame:
     """Process search result HTML bytes and return a DataFrame with image data."""
     logger_instance = logger_instance or logger
