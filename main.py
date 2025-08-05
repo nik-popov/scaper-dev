@@ -132,6 +132,13 @@ def get_file_location_and_header(file_id: int, logger_instance: logging.Logger) 
             raise FileNotFoundError(f"No file location found in DB for FileID {file_id}")
         file_location = result[0]
         header_row = result[1]
+        # Ensure header_row is an integer or None
+        if header_row is not None:
+            try:
+                header_row = int(header_row)
+            except (ValueError, TypeError):
+                logger_instance.warning(f"Invalid UserHeaderIndex for FileID {file_id}: {header_row}. Setting to None.")
+                header_row = None
         logger_instance.info(f"FileLocationUrl for FileID {file_id}: {file_location}")
         logger_instance.info(f"UserHeaderIndex for FileID {file_id}: {header_row if header_row is not None else 'Not Found'}")
         return file_location, header_row
@@ -400,6 +407,8 @@ def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict],
         if not re.match(r'^[A-Z]+$', target_column):
             raise ValueError(f"Invalid target_column: {target_column}. Must be a valid Excel column letter (e.g., 'A', 'B', 'AA').")
 
+        # Ensure header_row is an integer
+        header_row = int(header_row)
         row_dim = ws.row_dimensions.get(header_row + 1)
         DEFAULT_ROW_HEIGHT_POINTS = row_dim.height if row_dim and row_dim.height is not None else 12.75
         logger_instance.info(f"Using template row height: {DEFAULT_ROW_HEIGHT_POINTS} points from row {header_row + 1}")
@@ -617,6 +626,8 @@ async def generate_msrp_excel(file_id: str, target_column: str, row_offset: int 
         with open(local_filename, "wb") as f: f.write(res.content)
         
         header_row = header_row_from_db if header_row_from_db is not None else find_header_row_index(local_filename, logger_instance) or 0
+        # Ensure header_row is an integer
+        header_row = int(header_row)
         write_excel_msrp(local_filename, temp_images_dir, grouped_data, header_row, target_column, row_offset, logger_instance)
 
         processed_file_name = f"{Path(file_name).stem}_msrp_{timestamp}.xlsx"
