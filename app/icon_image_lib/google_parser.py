@@ -126,6 +126,12 @@ import re
 import logging
 from typing import List, Tuple, Optional
 from bs4 import BeautifulSoup
+import urllib.parse
+from typing import Optional, Tuple, List
+from bs4 import BeautifulSoup
+import logging
+import re
+import json
 
 def get_original_images(html_bytes: bytes, logger_instance: Optional[logging.Logger] = None) -> Tuple[List[str], List[str], List[str], List[str]]:
     """Extract image data from Google image search HTML in grid order."""
@@ -144,70 +150,54 @@ def get_original_images(html_bytes: bytes, logger_instance: Optional[logging.Log
         main_source_urls = []
         main_thumbs = []
         
-        # Attempt to find metadata divs with a flexible selector
-        meta_divs = soup.select('div[class*="meta"][class*="notranslate"], div[data-ved]')
+        # Process metadata divs
+        meta_divs = soup.select('div[data-ved]')
         logger_instance.debug(f"Found {len(meta_divs)} potential metadata entries")
         
         for idx, div in enumerate(meta_divs):
             try:
-                # Extract and clean text content
-                meta_json_str = div.get('data-ved') or div.text.strip()
-                if not meta_json_str:
-                    logger_instance.debug(f"Empty metadata in div {idx}")
-                    continue
-                
-                # Clean Unicode escape sequences
-                meta_json_str = re.sub(r'\\u([0-9a-fA-F]{4})', lambda m: chr(int(m.group(1), 16)), meta_json_str)
-                
-                # Attempt to extract the first valid JSON object
-                try:
-                    # Find the first '{' and last '}' to isolate potential JSON
-                    start = meta_json_str.find('{')
-                    end = meta_json_str.rfind('}') + 1
-                    if start == -1 or end == 0:
-                        raise json.JSONDecodeError("No valid JSON object found", meta_json_str, 0)
-                    meta_json_str = meta_json_str[start:end]
-                    meta_data = json.loads(meta_json_str, strict=False)
-                except json.JSONDecodeError as e:
-                    logger_instance.warning(f"Failed to parse JSON in metadata div {idx}: {e}. Raw content: {meta_json_str[:100]}...")
+                # Find imgres link for metadata
+                img_link = div.select_one('a[href^="/imgres"]')
+                if not img_link:
+                    logger_instance.debug(f"No imgres link in div {idx}")
                     main_image_urls.append('')
                     main_descriptions.append('')
                     main_source_urls.append('')
                     main_thumbs.append('')
                     continue
                 
-                # Extract image URL with fallback keys
-                full_url = meta_data.get('ou') or meta_data.get('imgurl') or ''
+                # Extract URL parameters
+                href = img_link.get('href', '')
+                params = urllib.parse.parse_qs(urllib.parse.urlparse(href).query)
+                
+                # Image URL
+                full_url = params.get('imgurl', [''])[0]
                 if full_url:
                     full_url = clean_source_url(full_url)
                     full_url = extract_true_url_from_wrapper(full_url, logger_instance)
                     full_url = clean_image_url(full_url)
-                    main_image_urls.append(full_url)
-                else:
-                    main_image_urls.append('')
+                main_image_urls.append(full_url if full_url else '')
                 
-                # Extract description with fallback keys
-                desc = meta_data.get('pt') or meta_data.get('s') or meta_data.get('alt') or ''
-                main_descriptions.append(desc)
-                
-                # Extract source URL with fallback keys
-                source_url = meta_data.get('ru') or meta_data.get('sru') or ''
+                # Source URL
+                source_url = params.get('imgrefurl', [''])[0]
                 if source_url:
                     source_url = clean_source_url(source_url)
                     source_url = extract_true_url_from_wrapper(source_url, logger_instance)
-                    main_source_urls.append(source_url)
-                else:
-                    main_source_urls.append('')
+                main_source_urls.append(source_url if source_url else '')
                 
-                # Extract thumbnail URL with fallback keys
-                thumb_url = meta_data.get('tu') or meta_data.get('st') or meta_data.get('tbn') or ''
-                if thumb_url and thumb_url.startswith('http'):
-                    thumb_url = clean_source_url(thumb_url)
-                    thumb_url = extract_true_url_from_wrapper(thumb_url, logger_instance)
-                    main_thumbs.append(thumb_url)
-                else:
-                    main_thumbs.append('')
-                    
+                # Description from div or img alt
+                desc_div = div.select_one('div.toI8Rb.OSrXXb')
+                desc = desc_div.text.strip() if desc_div else (img_link.select_one('img').get('alt', '') if img_link.select_one('img') else '')
+                main_descriptions.append(desc if desc else '')
+                
+                # Thumbnail
+                img_tag = img_link.select_one('img.YQ4gaf')
+                thumb_src = img_tag.get('src') or img_tag.get('data-src') or img_tag.get('data-iurl') or '' if img_tag else ''
+                if thumb_src and not thumb_src.startswith('data:image'):
+                    thumb_src = clean_source_url(thumb_src)
+                    thumb_src = extract_true_url_from_wrapper(thumb_src, logger_instance)
+                main_thumbs.append(thumb_src if thumb_src else '')
+                
             except Exception as e:
                 logger_instance.error(f"Error processing metadata div {idx}: {e}", exc_info=True)
                 main_image_urls.append('')
@@ -218,11 +208,11 @@ def get_original_images(html_bytes: bytes, logger_instance: Optional[logging.Log
         # Fallback to img tags if thumbnails are incomplete
         if not any(main_thumbs) or len([t for t in main_thumbs if t]) < len([u for u in main_image_urls if u]):
             logger_instance.info("Thumbnails incomplete; falling back to img tags")
-            img_tags = soup.select('img[class*="rg_i"], img[data-src], img[src], img[data-iurl]')
+            img_tags = soup.select('img.YQ4gaf, img[class*="rg_i"], img[data-src], img[src], img[data-iurl]')
             for idx, img in enumerate(img_tags):
                 try:
                     thumb_src = img.get('src') or img.get('data-src') or img.get('data-iurl') or ''
-                    if thumb_src:
+                    if thumb_src and not thumb_src.startswith('data:image') and any(thumb_src.endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.gif']):
                         thumb_src = clean_source_url(thumb_src)
                         thumb_src = extract_true_url_from_wrapper(thumb_src, logger_instance)
                         main_thumbs.append(thumb_src)
