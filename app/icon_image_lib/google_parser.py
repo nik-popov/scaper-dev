@@ -241,7 +241,7 @@ def decode_html_bytes(html_bytes: bytes, logger_instance: Optional[logging.Logge
         return html_bytes.decode('utf-8', errors='replace')
 
 def get_original_images(html_bytes: bytes, logger_instance: Optional[logging.Logger] = None) -> Tuple[List[str], List[str], List[str], List[str]]:
-    """Extract image data from Google image search HTML in grid order, excluding social media icons."""
+    """Extract image data from Google image search HTML in grid order, excluding social media icons and small images."""
     logger_instance = logger_instance or logger
     if not html_bytes:
         logger_instance.warning("Empty HTML bytes provided to get_original_images")
@@ -250,7 +250,7 @@ def get_original_images(html_bytes: bytes, logger_instance: Optional[logging.Log
         html_content = decode_html_bytes(html_bytes, logger_instance)
         soup = BeautifulSoup(html_content, 'html.parser')
         main_image_urls, main_descriptions, main_source_urls, main_thumbs = [], [], [], []
-        
+
         # Social media icon patterns to exclude
         social_media_patterns = [
             r'facebook\.com.*\.(png|jpg|jpeg|gif|webp|avif|svg)',
@@ -261,24 +261,25 @@ def get_original_images(html_bytes: bytes, logger_instance: Optional[logging.Log
             r'\.ico$',  # Favicon files
             r'logo\.(png|jpg|jpeg|gif|webp|avif|svg)',  # Generic logo files
             r'share\.(png|jpg|jpeg|gif|webp|avif|svg)',  # Share icons
-            r'icon\.(png|jpg|jpeg|gif|webp|avif|svg)'   # Generic icon files
+            r'icon\.(png|jpg|jpeg|gif|webp|avif|svg)',  # Generic icon files
+            r'favicon\.(png|jpg|jpeg|gif|webp|avif|svg)'  # Favicon files
         ]
-        
-        # Process metadata divs
-        meta_divs = soup.select('div[data-ved]')
+
+        # Process metadata divs (image result containers)
+        meta_divs = soup.select('div[data-ved], div[class*="eA0Zlc"], div[class*="rg_bx"]')
         logger_instance.debug(f"Found {len(meta_divs)} potential metadata entries")
         for idx, div in enumerate(meta_divs):
             try:
-                img_link = div.select_one('a[href^="/imgres"]')
+                # Find image link (expanded to handle variations)
+                img_link = div.select_one('a[href^="/imgres"], a[href*="imgurl"], a[class*="rQEFy"]')
                 if not img_link:
-                    logger_instance.debug(f"No imgres link in div {idx}")
+                    logger_instance.debug(f"No image link in div {idx}")
                     continue
                 href = img_link.get('href', '')
                 params = urllib.parse.parse_qs(urllib.parse.urlparse(href).query)
                 # Image URL
                 full_url = params.get('imgurl', [''])[0]
                 if full_url:
-                    # Check if URL matches social media icon patterns
                     if any(re.search(pattern, full_url, re.IGNORECASE) for pattern in social_media_patterns):
                         logger_instance.debug(f"Skipping social media icon URL: {full_url}")
                         continue
@@ -293,22 +294,30 @@ def get_original_images(html_bytes: bytes, logger_instance: Optional[logging.Log
                 if source_url:
                     source_url = clean_source_url(source_url)
                     source_url = extract_true_url_from_wrapper(source_url, logger_instance)
-                # Description
-                desc_div = div.select_one('div.toI8Rb.OSrXXb')
+                # Description (expanded to handle variations)
+                desc_div = div.select_one('div.toI8Rb.OSrXXb, div[class*="OSrXXb"], span[class*="OSrXXb"], div[class*="VwiC3b"]')
                 desc = desc_div.text.strip() if desc_div else (img_link.select_one('img').get('alt', '') if img_link.select_one('img') else '')
-                # Thumbnail
-                img_tag = img_link.select_one('img.YQ4gaf')
+                # Thumbnail (expanded to handle variations)
+                img_tag = img_link.select_one('img.YQ4gaf, img[class*="rg_i"], img[class*="sFlh5c"], img[class*="WICvnb"]')
                 thumb_src = img_tag.get('src') or img_tag.get('data-src') or img_tag.get('data-iurl') or '' if img_tag else ''
+                # Check image dimensions to exclude small icons
+                width = img_tag.get('width', '0') if img_tag else '0'
+                height = img_tag.get('height', '0') if img_tag else '0'
+                try:
+                    if int(width) <= 50 or int(height) <= 50:
+                        logger_instance.debug(f"Skipping small image (width: {width}, height: {height}): {thumb_src}")
+                        continue
+                except ValueError:
+                    pass
                 if thumb_src and not thumb_src.startswith('data:image'):
-                    # Check if thumbnail URL matches social media icon patterns
                     if any(re.search(pattern, thumb_src, re.IGNORECASE) for pattern in social_media_patterns):
                         logger_instance.debug(f"Skipping social media icon thumbnail: {thumb_src}")
                         continue
                     thumb_src = clean_source_url(thumb_src)
                     thumb_src = extract_true_url_from_wrapper(thumb_src, logger_instance)
-                    thumb_src = clean_image_url(thumb_src) or full_url  # Fallback to main URL if thumbnail invalid
+                    thumb_src = clean_image_url(thumb_src) or full_url
                 else:
-                    thumb_src = full_url  # Fallback to main image URL
+                    thumb_src = full_url
                 main_image_urls.append(full_url)
                 main_descriptions.append(desc if desc else '')
                 main_source_urls.append(source_url if source_url else '')
@@ -316,32 +325,38 @@ def get_original_images(html_bytes: bytes, logger_instance: Optional[logging.Log
             except Exception as e:
                 logger_instance.error(f"Error processing metadata div {idx}: {e}", exc_info=True)
                 continue
-        
+
         # Fallback to img tags if no valid results
         if not main_image_urls:
             logger_instance.info("No images from metadata; falling back to img tags")
-            img_tags = soup.select('img.YQ4gaf, img[class*="rg_i"], img[data-src], img[src], img[data-iurl]')
+            img_tags = soup.select('img.YQ4gaf, img[class*="rg_i"], img[class*="sFlh5c"], img[class*="WICvnb"], img[data-src], img[src], img[data-iurl]')
             for idx, img in enumerate(img_tags):
                 try:
                     thumb_src = img.get('src') or img.get('data-src') or img.get('data-iurl') or ''
                     if thumb_src and not thumb_src.startswith('data:image') and any(thumb_src.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp']):
-                        # Check if URL matches social media icon patterns
                         if any(re.search(pattern, thumb_src, re.IGNORECASE) for pattern in social_media_patterns):
                             logger_instance.debug(f"Skipping social media icon thumbnail in fallback: {thumb_src}")
                             continue
+                        width = img.get('width', '0')
+                        height = img.get('height', '0')
+                        try:
+                            if int(width) <= 50 or int(height) <= 50:
+                                logger_instance.debug(f"Skipping small image (width: {width}, height: {height}): {thumb_src}")
+                                continue
+                        except ValueError:
+                            pass
                         thumb_src = clean_source_url(thumb_src)
                         thumb_src = extract_true_url_from_wrapper(thumb_src, logger_instance)
                         thumb_src = clean_image_url(thumb_src)
                         if thumb_src:
                             main_image_urls.append(thumb_src)
                             main_descriptions.append(img.get('alt', '') or '')
-                            main_source_urls.append('')  # No source URL available
+                            main_source_urls.append('')
                             main_thumbs.append(thumb_src)
                 except Exception as e:
                     logger_instance.error(f"Error processing img tag {idx}: {e}", exc_info=True)
                     continue
-        
-        # Ensure all rows are processed by not limiting results
+
         min_length = min(len(main_image_urls), len(main_descriptions), len(main_source_urls), len(main_thumbs))
         main_image_urls = main_image_urls[:min_length]
         main_descriptions = main_descriptions[:min_length]
