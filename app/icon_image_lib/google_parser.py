@@ -81,7 +81,7 @@ from bs4 import BeautifulSoup
 import logging
 import pandas as pd
 import urllib.parse # Added for the new function
-
+from icon_image_lib.LR import LR # Assuming LR is in the same package
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 # It's good practice to get a logger instance per module
 # logger = logging.getLogger(__name__) # This would be used if not passing logger around
