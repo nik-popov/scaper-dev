@@ -11,10 +11,6 @@ import datetime
 import aiohttp
 import pandas as pd
 import pyodbc
-import tldextract
-import urllib.parse
-import random
-import uvicorn
 import requests
 from aiohttp import ClientTimeout
 from aiohttp_retry import RetryClient, ExponentialRetry
@@ -32,8 +28,6 @@ from collections import Counter
 import re
 import random
 from functools import partial
-# --- Production Imports ---
-# These are assumed to be in your project structure
 from app_config import engine, conn_str
 from email_utils import send_email, send_message_email
 from s3_utils import upload_file_to_space
