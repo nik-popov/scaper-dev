@@ -17,7 +17,7 @@ from aiohttp_retry import RetryClient, ExponentialRetry
 from fastapi import FastAPI, BackgroundTasks
 from openpyxl import load_workbook
 from openpyxl.drawing.image import Image
-from openpyxl.utils import column_index_from_string  # Add this import
+from openpyxl.utils import column_index_from_string
 from PIL import Image as PILImage
 from PIL import UnidentifiedImageError
 from tldextract import tldextract
@@ -80,7 +80,6 @@ def setup_logging(file_id: str, timestamp: str) -> logging.Logger:
     
     formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
     
-    # Avoid adding handlers if they already exist
     if not logger_instance.handlers:
         file_handler = logging.FileHandler(log_file)
         file_handler.setFormatter(formatter)
@@ -145,12 +144,12 @@ def get_images_excel_db(file_id: int, logger_instance: logging.Logger) -> pd.Dat
         cursor.execute("UPDATE utb_ImageScraperFiles SET CreateFileStartTime = GETDATE() WHERE ID = ?", (file_id,))
         connection.commit()
     
-    # MODIFIED QUERY: Use LEFT JOIN to include all records, even those without images
     query = """
         SELECT
             s.ExcelRowID, r.ImageUrl, r.ImageUrlThumbnail, r.SortOrder,
             s.ProductBrand AS Brand, s.ProductModel AS Style,
-            s.ProductColor AS Color, s.ProductCategory AS Category
+            s.ProductColor AS Color, s.ProductCategory AS Category,
+            s.ProductMSRP AS MSRP
         FROM utb_ImageScraperFiles f
         INNER JOIN utb_ImageScraperRecords s ON s.FileID = f.ID 
         LEFT JOIN utb_ImageScraperResult r ON r.EntryID = s.EntryID AND r.SortOrder > 0
@@ -187,7 +186,7 @@ async def image_download(semaphore, item: Dict, save_path: str, session, logger_
     async with semaphore:
         row_id = item['ExcelRowID']
         image_name = str(row_id)
-        loop = asyncio.get_running_loop() # Get loop here or pass it in
+        loop = asyncio.get_running_loop()
 
         for i, (url, thumb_url, sort_order) in enumerate(item['image_options']):
             
@@ -201,13 +200,11 @@ async def image_download(semaphore, item: Dict, save_path: str, session, logger_
                         
                         final_path = os.path.join(save_path, f"{image_name}.png")
 
-                        # --- MODIFIED PART ---
                         def save_image_sync():
                             with PILImage.open(BytesIO(data)) as img:
                                 img.save(final_path, 'PNG')
                         
                         await loop.run_in_executor(None, save_image_sync)
-                        # --- END MODIFIED PART ---
                                 
                         logger_instance.info(f"SUCCESS (SortOrder {sort_order}) for Row {row_id} from {'thumbnail' if is_thumb else 'main'} URL.")
                         return True
@@ -273,6 +270,7 @@ def resize_image(image_path: str, logger_instance: logging.Logger) -> bool:
     except Exception as e:
         logger_instance.error(f"Error resizing image {image_path}: {e}", exc_info=True)
         return False
+
 def get_last_non_empty_row(ws, column: str, header_row: int, logger_instance: logging.Logger) -> int:
     """Find the last non-empty row in the specified column, starting after header_row."""
     last_row = header_row
@@ -281,6 +279,7 @@ def get_last_non_empty_row(ws, column: str, header_row: int, logger_instance: lo
             last_row = max(last_row, row[0].row)
     logger_instance.info(f"Last non-empty row in column {column}: {last_row}")
     return last_row
+
 def verify_and_process_image(image_path: str, logger_instance: logging.Logger) -> bool:
     try:
         with PILImage.open(image_path) as img: img.verify()
@@ -295,25 +294,15 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
     ws = wb.active
     image_map = {int(Path(f).stem): f for f in os.listdir(temp_dir) if Path(f).stem.isdigit()}
 
-    # Get default row height from the template
-    DEFAULT_ROW_HEIGHT_POINTS = ws.row_dimensions.get(header_row + 1, {}).height
-    if DEFAULT_ROW_HEIGHT_POINTS is None:
-        DEFAULT_ROW_HEIGHT_POINTS = 12.75  # Excel default height in points
-        logger_instance.info(f"No row height set in template for row {header_row + 1}, using default {DEFAULT_ROW_HEIGHT_POINTS} points")
-    else:
-        logger_instance.info(f"Using template row height: {DEFAULT_ROW_HEIGHT_POINTS} points from row {header_row + 1}")
+    DEFAULT_ROW_HEIGHT_POINTS = ws.row_dimensions.get(header_row + 1, {}).height or 12.75
+    logger_instance.info(f"Using template row height: {DEFAULT_ROW_HEIGHT_POINTS} points from row {header_row + 1}")
 
-    # Create a mapping of ExcelRowID to metadata for quick lookup
     row_data_map = {item['ExcelRowID']: item for item in image_data}
-
-    # NEW: Call get_last_non_empty_row to find the last non-empty row in column B
     last_non_empty_row = get_last_non_empty_row(ws, column='B', header_row=header_row, logger_instance=logger_instance)
 
-    # Determine the range of ExcelRowIDs to process
     if image_data:
         min_row_id = min(item['ExcelRowID'] for item in image_data)
         max_row_id = max(item['ExcelRowID'] for item in image_data)
-        # Adjust max_row_id to account for the last non-empty row in the template
         max_row_id = max(max_row_id, last_non_empty_row - header_row)
         logger_instance.info(f"Row range: ExcelRowID {min_row_id} to {max_row_id}, adjusted for template last row {last_non_empty_row}")
     else:
@@ -321,31 +310,27 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
         max_row_id = last_non_empty_row - header_row if last_non_empty_row > header_row else 1
         logger_instance.warning(f"No data in image_data, setting range based on template last row {last_non_empty_row}")
 
-    # Ensure enough rows exist in the worksheet
     max_needed_row = max_row_id + header_row
     if ws.max_row < max_needed_row:
         logger_instance.info(f"Appending {max_needed_row - ws.max_row} rows to worksheet")
         for row_num in range(ws.max_row + 1, max_needed_row + 1):
-            ws.append([''] * ws.max_column)  # Append empty row to match column count
+            ws.append([''] * ws.max_column)
             ws.row_dimensions[row_num].height = DEFAULT_ROW_HEIGHT_POINTS
 
-    # Process all rows in the expected range to avoid gaps
     for row_id in range(min_row_id, max_row_id + 1):
         row_num = row_id + header_row
         ws.row_dimensions[row_num].height = DEFAULT_ROW_HEIGHT_POINTS
 
         if row_id in row_data_map:
             item = row_data_map[row_id]
-            # Write image if available
             if row_id in image_map:
                 image_path = os.path.join(temp_dir, image_map[row_id])
                 if verify_and_process_image(image_path, logger_instance):
                     img = Image(image_path)
                     img.anchor = f"A{row_num}"
                     ws.add_image(img)
-                    # Adjust row height based on image if needed
                     img_height_pixels = img.height if hasattr(img, 'height') else 0
-                    img_height_points = img_height_pixels * 72 / 96  # Assuming 96 DPI
+                    img_height_points = img_height_pixels * 72 / 96
                     ws.row_dimensions[row_num].height = max(DEFAULT_ROW_HEIGHT_POINTS, img_height_points)
                     logger_instance.info(f"Added image for Row {row_id} at Excel row {row_num}, height set to {ws.row_dimensions[row_num].height} points")
                 else:
@@ -353,26 +338,25 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
             else:
                 logger_instance.info(f"No image found for Row {row_id}, writing metadata only")
 
-            # Write metadata
             ws[f"B{row_num}"] = item.get('Brand', '')
             ws[f"D{row_num}"] = item.get('Style', '')
             ws[f"E{row_num}"] = item.get('Color', '')
             ws[f"H{row_num}"] = item.get('Category', '')
             logger_instance.info(f"Wrote metadata for Row {row_id} at Excel row {row_num}")
         else:
-            # Fill missing row with empty metadata
             ws[f"B{row_num}"] = ''
             ws[f"D{row_num}"] = ''
             ws[f"E{row_num}"] = ''
             ws[f"H{row_num}"] = ''
             logger_instance.info(f"Filled missing row {row_num} (ExcelRowID {row_id}) with empty metadata")
-        # Remove rows after the last data row
-        if ws.max_row > max_row_id + header_row:
-            logger_instance.info(f"Deleting {ws.max_row - (max_row_id + header_row)} rows after row {max_row_id + header_row}")
-            ws.delete_rows(max_row_id + header_row + 1, ws.max_row - (max_row_id + header_row))
-        logger_instance.info("Setting worksheet view to A1.")
-        wb.save(local_filename)
-        logger_instance.info(f"Excel file saved: {local_filename}")
+
+    if ws.max_row > max_row_id + header_row:
+        logger_instance.info(f"Deleting {ws.max_row - (max_row_id + header_row)} rows after row {max_row_id + header_row}")
+        ws.delete_rows(max_row_id + header_row + 1, ws.max_row - (max_row_id + header_row))
+
+    logger_instance.info("Setting worksheet view to A1.")
+    wb.save(local_filename)
+    logger_instance.info(f"Excel file saved: {local_filename}")
 
 def write_excel_generic(local_filename: str, temp_dir: str, header_row: int, row_offset: int, logger_instance: logging.Logger):
     try:
@@ -406,6 +390,78 @@ def find_header_row_index(excel_file: str, logger_instance: logging.Logger) -> O
     except Exception as e:
         logger_instance.error(f"Could not find header row: {e}"); return None
 
+def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, target_column: str, row_offset: int, logger_instance: logging.Logger):
+    try:
+        wb = load_workbook(local_filename)
+        ws = wb.active
+        image_map = {int(Path(f).stem): f for f in os.listdir(temp_dir) if Path(f).stem.isdigit()}
+        if not re.match(r'^[A-Z]+$', target_column):
+            raise ValueError(f"Invalid target_column: {target_column}. Must be a valid Excel column letter (e.g., 'A', 'B', 'AA').")
+
+        row_dim = ws.row_dimensions.get(header_row + 1)
+        DEFAULT_ROW_HEIGHT_POINTS = row_dim.height if row_dim and row_dim.height is not None else 12.75
+        logger_instance.info(f"Using template row height: {DEFAULT_ROW_HEIGHT_POINTS} points from row {header_row + 1}")
+
+        row_data_map = {item['ExcelRowID']: item for item in image_data}
+        last_non_empty_row = get_last_non_empty_row(ws, column='B', header_row=header_row, logger_instance=logger_instance)
+
+        if image_data:
+            min_row_id = min(item['ExcelRowID'] for item in image_data)
+            max_row_id = max(item['ExcelRowID'] for item in image_data)
+            max_row_id = max(max_row_id, last_non_empty_row - header_row)
+            logger_instance.info(f"Row range: ExcelRowID {min_row_id} to {max_row_id}, adjusted for template last row {last_non_empty_row}")
+        else:
+            min_row_id = 1
+            max_row_id = last_non_empty_row - header_row if last_non_empty_row > header_row else 1
+            logger_instance.warning(f"No data in image_data, setting range based on template last row {last_non_empty_row}")
+
+        max_needed_row = max_row_id + header_row + row_offset
+        if ws.max_row < max_needed_row:
+            logger_instance.info(f"Appending {max_needed_row - ws.max_row} rows to worksheet")
+            for row_num in range(ws.max_row + 1, max_needed_row + 1):
+                ws.append([''] * ws.max_column)
+                ws.row_dimensions[row_num].height = DEFAULT_ROW_HEIGHT_POINTS
+
+        for row_id in range(min_row_id, max_row_id + 1):
+            row_num = row_id + header_row + row_offset
+            ws.row_dimensions[row_num].height = DEFAULT_ROW_HEIGHT_POINTS
+
+            if row_id in row_data_map:
+                item = row_data_map[row_id]
+                if row_id in image_map:
+                    image_path = os.path.join(temp_dir, image_map[row_id])
+                    if verify_and_process_image(image_path, logger_instance):
+                        img = Image(image_path)
+                        img.anchor = f"A{row_num}"
+                        ws.add_image(img)
+                        img_height_pixels = img.height if hasattr(img, 'height') else 0
+                        img_height_points = img_height_pixels * 72 / 96
+                        ws.row_dimensions[row_num].height = max(DEFAULT_ROW_HEIGHT_POINTS, img_height_points)
+                        logger_instance.info(f"Added image for Row {row_id} at Excel row {row_num}, height set to {ws.row_dimensions[row_num].height} points")
+                    else:
+                        logger_instance.warning(f"Image processing failed for Row {row_id}, writing MSRP only")
+                else:
+                    logger_instance.info(f"No image found for Row {row_id}, writing MSRP only")
+
+                msrp_value = item.get('MSRP', '')
+                ws.cell(row=row_num, column=column_index_from_string(target_column)).value = msrp_value
+                logger_instance.info(f"Wrote MSRP '{msrp_value}' for Row {row_id} at {target_column}{row_num}")
+            else:
+                ws.cell(row=row_num, column=column_index_from_string(target_column)).value = ''
+                logger_instance.info(f"Filled missing row {row_num} (ExcelRowID {row_id}) with empty MSRP")
+
+        if ws.max_row > max_row_id + header_row + row_offset:
+            logger_instance.info(f"Deleting {ws.max_row - (max_row_id + header_row + row_offset)} rows after row {max_row_id + header_row + row_offset}")
+            ws.delete_rows(max_row_id + header_row + row_offset + 1, ws.max_row - (max_row_id + header_row + row_offset))
+
+        logger_instance.info("Setting worksheet view to A1.")
+        ws.sheet_view.topLeftCell = 'B6'
+        wb.save(local_filename)
+        logger_instance.info(f"MSRP Excel file saved: {local_filename}")
+    except Exception as e:
+        logger_instance.error(f"Error writing to MSRP Excel file: {e}", exc_info=True)
+        raise
+
 # --- Main Background Task ---
 async def generate_download_file(file_id: str, row_offset: int = 0):
     timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
@@ -420,7 +476,6 @@ async def generate_download_file(file_id: str, row_offset: int = 0):
         logger_instance.info("Fetching all image data from database...")
         images_df = get_images_excel_db(file_id_int, logger_instance)
         
-        # NEW: Fetch all records if images_df is empty to ensure metadata is processed
         if images_df.empty:
             logger_instance.warning(f"No image data found for FileID {file_id}. Fetching all records for metadata.")
             query = """
@@ -442,7 +497,6 @@ async def generate_download_file(file_id: str, row_offset: int = 0):
         grouped_data = []
         for _, group in images_df.groupby('ExcelRowID'):
             first_row = group.iloc[0]
-            # Include image options only if they exist
             image_options = list(zip(group['ImageUrl'], group['ImageUrlThumbnail'], group['SortOrder'])) if 'ImageUrl' in group.columns else []
             
             grouped_data.append({
@@ -504,57 +558,7 @@ async def generate_download_file(file_id: str, row_offset: int = 0):
         if temp_images_dir and temp_excel_dir:
             await cleanup_temp_dirs([temp_images_dir, temp_excel_dir])
 
-def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, target_column: str, logger_instance: logging.Logger):
-    try:
-        wb = load_workbook(local_filename)
-        ws = wb.active
-        image_map = {int(Path(f).stem): f for f in os.listdir(temp_dir) if Path(f).stem.isdigit()}
-        if not re.match(r'^[A-Z]+$', target_column):
-            raise ValueError(f"Invalid target_column: {target_column}. Must be a valid Excel column letter (e.g., 'A', 'B', 'AA').")
-        # Get default row height
-        row_dim = ws.row_dimensions.get(header_row + 1)
-        DEFAULT_ROW_HEIGHT_POINTS = row_dim.height if row_dim and row_dim.height is not None else 12.75
-
-        # Create a mapping of ExcelRowID to metadata
-        row_data_map = {item['ExcelRowID']: item for item in image_data}
-
-        for row_id in sorted(row_data_map.keys()):
-            item = row_data_map[row_id]
-            row_num = row_id + header_row
-            ws.row_dimensions[row_num].height = DEFAULT_ROW_HEIGHT_POINTS
-
-            # Write image if available (Column A)
-            if row_id in image_map:
-                image_path = os.path.join(temp_dir, image_map[row_id])
-                if verify_and_process_image(image_path, logger_instance):
-                    img = Image(image_path)
-                    img.anchor = f"A{row_num}"
-                    ws.add_image(img)
-                    # Adjust row height based on image if needed
-                    img_height_pixels = img.height if hasattr(img, 'height') else 0
-                    img_height_points = img_height_pixels * 72 / 96  # Assuming 96 DPI
-                    ws.row_dimensions[row_num].height = max(DEFAULT_ROW_HEIGHT_POINTS, img_height_points)
-                    logger_instance.info(f"Added image for Row {row_id} at Excel row {row_num}, height set to {ws.row_dimensions[row_num].height} points")
-                else:
-                    logger_instance.warning(f"Image processing failed for Row {row_id}, writing MSRP only")
-            else:
-                logger_instance.info(f"No image found for Row {row_id}, writing MSRP only")
-
-            # Write MSRP to target column
-            msrp_value = item.get('MSRP', '')
-            ws.cell(row=row_num, column=column_index_from_string(target_column)).value = msrp_value
-            logger_instance.info(f"Wrote MSRP '{msrp_value}' for Row {row_id} at {target_column}{row_num}")
-
-        logger_instance.info("Setting worksheet view to A1.")
-        ws.sheet_view.topLeftCell = 'B6'
-        wb.save(local_filename)
-        logger_instance.info(f"MSRP Excel file saved: {local_filename}")
-    except Exception as e:
-        logger_instance.error(f"Error writing to MSRP Excel file: {e}", exc_info=True)
-        raise
-
-
-async def generate_msrp_excel(file_id: str, target_column: str):
+async def generate_msrp_excel(file_id: str, target_column: str, row_offset: int = 0):
     timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
     logger_instance = setup_logging(file_id, timestamp)
     temp_images_dir, temp_excel_dir = "", ""
@@ -610,17 +614,17 @@ async def generate_msrp_excel(file_id: str, target_column: str):
         with open(local_filename, "wb") as f: f.write(res.content)
         
         header_row = find_header_row_index(local_filename, logger_instance) or 0
-        write_excel_msrp(local_filename, temp_images_dir, grouped_data, header_row, target_column, logger_instance)
+        write_excel_msrp(local_filename, temp_images_dir, grouped_data, header_row, target_column, row_offset, logger_instance)
 
         processed_file_name = f"{Path(file_name).stem}_msrp_{timestamp}.xlsx"
         public_url = await upload_file_to_space(local_filename, save_as=f"processed_files/{processed_file_name}", file_id=file_id_int, is_public=True)
         update_file_location_complete(file_id_int, public_url, logger_instance)
         await send_email(
-    to_emails='nik@iconluxurygroup.com',
-    subject=f'MSRP File Processed: {file_name}',
-    file_path=local_filename,
-    job_id=file_id
-)
+            to_emails='nik@iconluxurygroup.com',
+            subject=f'MSRP File Processed: {file_name}',
+            file_path=local_filename,
+            job_id=file_id
+        )
         
         logger_instance.info(f"Successfully completed MSRP job for FileID {file_id}.")
 
@@ -638,9 +642,9 @@ async def process_file(background_tasks: BackgroundTasks, file_id: int, row_offs
     return {"message": "Processing started. You will be notified upon completion."}
 
 @app.post("/generate-msrp-excel/")
-async def process_msrp_file(background_tasks: BackgroundTasks, file_id: int, target_column: str):
-    logger.info(f"Received request for MSRP FileID: {file_id} with target_column={target_column}")
-    background_tasks.add_task(generate_msrp_excel, str(file_id), target_column)
+async def process_msrp_file(background_tasks: BackgroundTasks, file_id: int, target_column: str, row_offset: Optional[int] = 0):
+    logger.info(f"Received request for MSRP FileID: {file_id} with target_column={target_column} and row_offset={row_offset}")
+    background_tasks.add_task(generate_msrp_excel, str(file_id), target_column, row_offset)
     return {"message": "MSRP Processing started. You will be notified upon completion."}
 
 @app.get("/")
