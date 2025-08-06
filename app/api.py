@@ -278,7 +278,7 @@ class SearchClient:
         async with self.semaphore:
             process_info = psutil.Process()
             quoted_term = f'"{term}"'
-            search_url_google = f"https://www.google.com/search?q={urllib.parse.quote(quoted_term)}&tbm=isch"
+            search_url_google = f"https://www.google.com/search?q={urllib.parse.quote(quoted_term)}&udm=2"
             current_session = await self._get_session()
             results = []
 
