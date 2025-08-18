@@ -653,7 +653,6 @@ async def run_generate_download_file(
             file_generation_endpoint = f"https://icon5-8081.iconluxury.today/generate-msrp-excel/?file_id={file_id}&target_column={msrp_target}"
         if input_type == "image" or (input_type == "msrp" and not msrp_target):
             file_generation_endpoint = f"https://icon5-8081.iconluxury.today/generate-download-file/?file_id={file_id}&row_offset=0"
-            restart_flag = True
         parent_logger.info(f"{log_prefix} Calling file generation service: {file_generation_endpoint}")
         async with httpx.AsyncClient(timeout=300.0) as client:
             response = await client.post(file_generation_endpoint, headers={"accept": "application/json"})
@@ -661,8 +660,7 @@ async def run_generate_download_file(
             service_response_data = response.json()
         
         parent_logger.info(f"{log_prefix} Response from file generation service: {service_response_data}")
-        if msrp_target is None and restart_flag:
-            restart_flag = None
+        if msrp_target is None and input_type != "image":
             run_scrape_job = f"https://icon7-8080.iconluxury.today/api/v7/restart-job/{file_id}"
             async with httpx.AsyncClient(timeout=300.0) as client:
                 response = await client.post(run_scrape_job, headers={"accept": "application/json"})
