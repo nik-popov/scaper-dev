@@ -1520,20 +1520,7 @@ async def api_populate_results_from_warehouse(
         final_log_s3_url = await upload_log_file(
             job_run_id, log_file_path, logger, db_record_file_id_to_update=file_id
         )
-        # Construct the restart job URL
-        restart_job_url =  f'https://icon7-8080.iconluxury.today/api/v7/restart-job/{file_id}?use_all_variations=false&num_workers_hint=8' 
-        # Send the POST request to restart the search job
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                restart_job_url,
-                headers={"accept": "application/json"}
-            ) as response:
-                if response.status == 200:
-                    default_logger.info(f"Successfully triggered restart search job for file ID {file_id}")
-                else:
-                    default_logger.error(f"Failed to trigger restart search job for file ID {file_id}: {response.status}")
-                    # Optionally, you could raise an exception or continue without failing the email
-                    # raise HTTPException(status_code=500, detail=f"Failed to trigger restart job: {response.status}")
+        
         return {
             "status": "processing_enqueued"
             if counters["num_results_enqueued"] > 0
@@ -2391,7 +2378,20 @@ async def api_warehouse_batch_query_and_populate(
         logger.info(f"[{job_run_id}] {summary_msg}")
 
         final_log_url = await upload_log_file(job_run_id, log_file_path, logger, db_record_file_id_to_update=file_id)
-        
+        # Construct the restart job URL
+        restart_job_url =  f'https://icon7-8080.iconluxury.today/api/v7/restart-job/{file_id}?use_all_variations=false&num_workers_hint=8' 
+        # Send the POST request to restart the search job
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                restart_job_url,
+                headers={"accept": "application/json"}
+            ) as response:
+                if response.status == 200:
+                    default_logger.info(f"Successfully triggered restart search job for file ID {file_id}")
+                else:
+                    default_logger.error(f"Failed to trigger restart search job for file ID {file_id}: {response.status}")
+                    # Optionally, you could raise an exception or continue without failing the email
+                    # raise HTTPException(status_code=500, detail=f"Failed to trigger restart job: {response.status}")
         return {
             "status": "completed",
             "message": summary_msg,
