@@ -619,8 +619,6 @@ async def run_generate_download_file(
             input_config_url = file_info_result[0] if file_info_result[0] else None
             parent_logger.info(f"{log_prefix} Retrieved InputConfigURL: {input_config_url}")
 
-        # Read JSON from InputConfigURL to get msrp_target
-        msrp_target = None
         if input_config_url:
             try:
                 async with httpx.AsyncClient(timeout=30.0) as client:
@@ -651,7 +649,7 @@ async def run_generate_download_file(
                 raise
 
         # Determine file generation endpoint based on msrp_target
-        if input_type == "msrp":
+        if input_type == "msrp" and msrp_target:
             file_generation_endpoint = f"https://icon5-8081.iconluxury.today/generate-msrp-excel/?file_id={file_id}&target_column={msrp_target}"
         if input_type == "image":
             file_generation_endpoint = f"https://icon5-8081.iconluxury.today/generate-download-file/?file_id={file_id}&row_offset=0"
