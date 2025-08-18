@@ -661,6 +661,7 @@ async def run_generate_download_file(
         
         parent_logger.info(f"{log_prefix} Response from file generation service: {service_response_data}")
         if msrp_target is None:
+            msrp_target = True
             run_scrape_job = f"https://icon7-8080.iconluxury.today/api/v7/restart-job/{file_id}"
             async with httpx.AsyncClient(timeout=300.0) as client:
                 response = await client.post(run_scrape_job, headers={"accept": "application/json"})
