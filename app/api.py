@@ -579,6 +579,13 @@ async def run_job_with_logging(
         "data": result_payload, 
         "debug_info": debug_info
     }
+import datetime
+import logging
+import httpx
+from typing import Optional
+from fastapi import BackgroundTasks
+from sqlalchemy.sql import text
+
 async def run_generate_download_file(
     file_id: str,
     parent_logger: logging.Logger,
@@ -587,11 +594,70 @@ async def run_generate_download_file(
     log_prefix = f"[GenerateDownloadFile Client | FileID {file_id}]"
     parent_logger.info(f"{log_prefix} Initiating request to generate download file.")
     job_key = f"generate_download_{file_id}"
-    JOB_STATUS[job_key] = {"status": "initiating_generation_request", "message": "Requesting download file generation.", "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(), "file_id": file_id}
-
+    JOB_STATUS[job_key] = {
+        "status": "initiating_generation_request",
+        "message": "Requesting download file generation.",
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "file_id": file_id
+    }
+    
     try:
-        # Ensure this URL is configurable and points to the correct service endpoint.
-        file_generation_endpoint = os.getenv("FILE_GENERATION_SERVICE_URL", f"https://icon7-8001.iconluxury.today/v2/generate-download-file/?file_id={file_id}")
+        # Fetch InputConfigURL from database
+        file_id_int = int(file_id)
+        input_config_url = None
+        async with async_engine.connect() as conn:
+            file_info_q = await conn.execute(
+                text(
+                    f"SELECT InputConfigURL FROM {IMAGE_SCRAPER_FILES_TABLE_NAME} WHERE {IMAGE_SCRAPER_FILES_PK_COLUMN} = :fid"
+                ),
+                {"fid": file_id_int},
+            )
+            file_info_result = file_info_q.fetchone()
+            if not file_info_result:
+                parent_logger.error(f"{log_prefix} FileID '{file_id_int}' not found in {IMAGE_SCRAPER_FILES_TABLE_NAME}.")
+                JOB_STATUS[job_key].update({
+                    "status": "file_not_found",
+                    "message": f"FileID {file_id_int} not found.",
+                    "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
+                })
+                raise Exception(f"FileID {file_id_int} not found.")
+            input_config_url = file_info_result[0] if file_info_result[0] else None
+            parent_logger.info(f"{log_prefix} Retrieved InputConfigURL: {input_config_url}")
+
+        # Read JSON from InputConfigURL to get msrp_target
+        msrp_target = None
+        if input_config_url:
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    response = await client.get(input_config_url, headers={"accept": "application/json"})
+                    response.raise_for_status()
+                    config_data = response.json()
+                    msrp_target = config_data.get("msrp_target")
+                    parent_logger.info(f"{log_prefix} Retrieved msrp_target from InputConfigURL: {msrp_target}")
+            except httpx.HTTPStatusError as hse:
+                parent_logger.error(
+                    f"{log_prefix} HTTP error fetching InputConfigURL {input_config_url}: Status {hse.response.status_code}, Response: {hse.response.text}"
+                )
+                JOB_STATUS[job_key].update({
+                    "status": "config_url_fetch_error",
+                    "message": f"HTTP error fetching InputConfigURL: {hse.response.status_code}",
+                    "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
+                })
+            except Exception as e:
+                parent_logger.error(
+                    f"{log_prefix} Unexpected error fetching InputConfigURL {input_config_url}: {str(e)}"
+                )
+                JOB_STATUS[job_key].update({
+                    "status": "config_url_fetch_error",
+                    "message": f"Unexpected error fetching InputConfigURL: {str(e)}",
+                    "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
+                })
+
+        # Determine file generation endpoint based on msrp_target
+        if msrp_target is not None:
+            file_generation_endpoint = f"https://icon7-8001.iconluxury.today/v2/generate-download-file-with-target/?file_id={file_id}&target={msrp_target}"
+        else:
+            file_generation_endpoint = f"https://icon7-8001.iconluxury.today/v2/generate-download-file/?file_id={file_id}"
         parent_logger.info(f"{log_prefix} Calling file generation service: {file_generation_endpoint}")
 
         async with httpx.AsyncClient(timeout=300.0) as client:
@@ -601,22 +667,41 @@ async def run_generate_download_file(
         
         parent_logger.info(f"{log_prefix} Response from file generation service: {service_response_data}")
 
-        # Assuming the service returns a structure like {"status_code": 200, "public_url": "..."} or {"error": "..."}
-        if service_response_data.get("public_url"): # Simplified check
-            JOB_STATUS[job_key].update({"status": "generation_successful_reported", "message": "File generation service reported success.", "public_url": service_response_data["public_url"], "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()})
+        # Handle service response
+        if service_response_data.get("public_url"):
+            JOB_STATUS[job_key].update({
+                "status": "generation_successful_reported",
+                "message": "File generation service reported success.",
+                "public_url": service_response_data["public_url"],
+                "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
+            })
             parent_logger.info(f"{log_prefix} File generation successful. URL: {service_response_data['public_url']}")
-            await update_file_location_complete(file_id, service_response_data["public_url"], parent_logger) # Enqueues DB update
+            await update_file_location_complete(file_id, service_response_data["public_url"], parent_logger)
         else:
             error_detail = service_response_data.get("error", service_response_data.get("message", "Unknown issue from generation service."))
-            JOB_STATUS[job_key].update({"status": "generation_failed_reported", "message": f"File generation service failed: {error_detail}", "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()})
+            JOB_STATUS[job_key].update({
+                "status": "generation_failed_reported",
+                "message": f"File generation service failed: {error_detail}",
+                "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
+            })
             parent_logger.error(f"{log_prefix} File generation service reported failure: {error_detail}. Response: {service_response_data}")
     except httpx.HTTPStatusError as hse:
-        parent_logger.error(f"{log_prefix} HTTP error calling file generation service: Status {hse.response.status_code}, Response: {hse.response.text}", exc_info=True)
-        JOB_STATUS[job_key].update({"status": "generation_request_http_error", "message": f"HTTP error with generation service: {hse.response.status_code}", "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()})
+        parent_logger.error(
+            f"{log_prefix} HTTP error calling file generation service: Status {hse.response.status_code}, Response: {hse.response.text}",
+            exc_info=True
+        )
+        JOB_STATUS[job_key].update({
+            "status": "generation_request_http_error",
+            "message": f"HTTP error with generation service: {hse.response.status_code}",
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
+        })
     except Exception as e:
-        parent_logger.error(f"{log_prefix} Unexpected error during file generation request: {e}", exc_info=True)
-        JOB_STATUS[job_key].update({"status": "generation_request_unexpected_error", "message": f"Unexpected error: {str(e)}", "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()})
-
+        parent_logger.error(f"{log_prefix} Unexpected error during file generation request: {str(e)}", exc_info=True)
+        JOB_STATUS[job_key].update({
+            "status": "generation_request_unexpected_error",
+            "message": f"Unexpected error: {str(e)}",
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
+        })
 async def upload_log_file(
     job_id_for_s3_path: str,
     local_log_file_path: str,
