@@ -2176,18 +2176,10 @@ async def api_warehouse_batch_query(
         final_log_s3_url = await upload_log_file(
             job_run_id, log_file_path, logger, db_record_file_id_to_update=file_id
         )
-        try:
-            # Bypassing sort order update to keep original insertion order
-            # await update_sort_order(file_id_db_str, logger=logger, background_tasks=background_tasks)
-            # logger.info(f"FileID {file_id_for_db}: Sort order update bypassed.")
-            await run_generate_download_file(file_id, logger)
-            logger.info(
+
+        await run_generate_download_file(file_id, logger)
+        logger.info(
                 f"FileID {file_id}: Download file generation task initiated."
-            )
-        except Exception as e_post_tasks:
-            logger.error(
-                f"FileID {file_id}: Error during post-search tasks: {e_post_tasks}",
-                exc_info=True,
             )
         final_email = user_email_from_db or email
         
