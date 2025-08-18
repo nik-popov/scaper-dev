@@ -677,7 +677,7 @@ async def run_generate_download_file(
             else:
                 await update_file_location_complete(file_id, service_response_data["public_url"], parent_logger)
                 
-        elif service_response_data.get("message") == "Processing started. You will be notified upon completion.":
+        elif service_response_data.get("message") == "Processing started. You will be notified upon completion." or service_response_data.get("message") == "MSRP Processing started. You will be notified upon completion.":
             JOB_STATUS[job_key].update({
                 "status": "generation_in_progress",
                 "message": "File generation in progress. Awaiting completion.",
