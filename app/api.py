@@ -654,8 +654,8 @@ async def run_generate_download_file(
                 })
 
         # Determine file generation endpoint based on msrp_target
-        if msrp_target is not None:
-            file_generation_endpoint = f"https://icon5-8081.iconluxury.today/generate-msrp-excel/?file_id={file_id}&target_column={msrp_target}&row_offset=0"
+        if msrp_target is not None or msrp_target == "NULL":
+            file_generation_endpoint = f"https://icon5-8081.iconluxury.today/generate-msrp-excel/?file_id={file_id}&target_column={msrp_target}"
         else:
             file_generation_endpoint = f"https://icon5-8081.iconluxury.today/generate-download-file/?file_id={file_id}&row_offset=0"
         parent_logger.info(f"{log_prefix} Calling file generation service: {file_generation_endpoint}")
