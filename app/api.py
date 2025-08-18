@@ -698,9 +698,9 @@ async def run_generate_download_file(
             async with httpx.AsyncClient(timeout=300.0) as client:
                 response = await client.post(restart_job_url, headers={"accept": "application/json"})
                 response.raise_for_status()
-                service_response_data = response.json()
+                restart_service_response_data = response.json()
 
-            parent_logger.info(f"{log_prefix} Response from file generation service: {service_response_data}")
+            parent_logger.info(f"{log_prefix} Response from file generation service: {restart_service_response_data}")
                 
         elif service_response_data.get("message") == "Processing started. You will be notified upon completion.":
             JOB_STATUS[job_key].update({
