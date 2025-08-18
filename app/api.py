@@ -655,9 +655,9 @@ async def run_generate_download_file(
 
         # Determine file generation endpoint based on msrp_target
         if msrp_target is not None:
-            file_generation_endpoint = f"https://icon7-8001.iconluxury.today/v2/generate-download-file-with-target/?file_id={file_id}&target={msrp_target}"
+            file_generation_endpoint = f"https://icon5-8081.iconluxury.today/generate-msrp-excel/?file_id={file_id}&target_column={msrp_target}&row_offset=0"
         else:
-            file_generation_endpoint = f"https://icon7-8001.iconluxury.today/v2/generate-download-file/?file_id={file_id}"
+            file_generation_endpoint = f"https://icon5-8081.iconluxury.today/generate-download-file/?file_id={file_id}&row_offset=0"
         parent_logger.info(f"{log_prefix} Calling file generation service: {file_generation_endpoint}")
 
         async with httpx.AsyncClient(timeout=300.0) as client:
