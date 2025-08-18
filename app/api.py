@@ -674,19 +674,20 @@ async def run_generate_download_file(
                 "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
             })
             parent_logger.info(f"{log_prefix} File generation successful. URL: {service_response_data['public_url']}")
-            if restart_flag:
-                restart_job_url = f"https://icon7-8080.iconluxury.today/api/v7/restart-job/?file_id={file_id}"
-                async with httpx.AsyncClient(timeout=300.0) as client:
-                    response = await client.post(restart_job_url, headers={"accept": "application/json"})
-                    response.raise_for_status()
-                    service_response_data = response.json()
 
-                parent_logger.info(f"{log_prefix} Response from file generation service: {service_response_data}")
-            
             if background_tasks:
                 background_tasks.add_task(update_file_location_complete, file_id, service_response_data["public_url"], parent_logger)
             else:
                 await update_file_location_complete(file_id, service_response_data["public_url"], parent_logger)
+        if restart_flag:
+            restart_job_url = f"https://icon7-8080.iconluxury.today/api/v7/restart-job/?file_id={file_id}"
+            async with httpx.AsyncClient(timeout=300.0) as client:
+                response = await client.post(restart_job_url, headers={"accept": "application/json"})
+                response.raise_for_status()
+                service_response_data = response.json()
+
+            parent_logger.info(f"{log_prefix} Response from file generation service: {service_response_data}")
+                
         elif service_response_data.get("message") == "Processing started. You will be notified upon completion.":
             JOB_STATUS[job_key].update({
                 "status": "generation_in_progress",
