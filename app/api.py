@@ -680,7 +680,7 @@ async def run_generate_download_file(
             else:
                 await update_file_location_complete(file_id, service_response_data["public_url"], parent_logger)
         if restart_flag:
-            restart_job_url = f"https://icon7-8080.iconluxury.today/api/v7/restart-job/?file_id={file_id}"
+            restart_job_url = f"https://icon7-8080.iconluxury.today/api/v7/restart-job/{file_id}"
             async with httpx.AsyncClient(timeout=300.0) as client:
                 response = await client.post(restart_job_url, headers={"accept": "application/json"})
                 response.raise_for_status()
