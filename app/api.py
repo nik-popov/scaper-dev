@@ -680,6 +680,20 @@ async def run_generate_download_file(
             else:
                 await update_file_location_complete(file_id, service_response_data["public_url"], parent_logger)
         if restart_flag:
+            # Construct the restart job URL
+            step_one =  f'https://icon7-8080.iconluxury.today/api/v7/warehouse/batch-query-and-populate/{file_id}?limit=9500&currency=USD' 
+            # Send the POST request to restart the search job
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    step_one,
+                    headers={"accept": "application/json"}
+                ) as response:
+                    if response.status == 200:
+                        default_logger.info(f"Successfully triggered restart search job for file ID {file_id}")
+                    else:
+                        default_logger.error(f"Failed to trigger restart search job for file ID {file_id}: {response.status}")
+                        # Optionally, you could raise an exception or continue without failing the email
+                        # raise HTTPException(status_code=500, detail=f"Failed to trigger restart job: {response.status}")
             restart_job_url = f"https://icon7-8080.iconluxury.today/api/v7/restart-job/{file_id}"
             async with httpx.AsyncClient(timeout=300.0) as client:
                 response = await client.post(restart_job_url, headers={"accept": "application/json"})
@@ -906,20 +920,7 @@ async def process_restart_batch(
             "log_public_url": log_url or "",
             "last_entry_id_processed": str(entry_id or ""),
         }
-        # Construct the restart job URL
-    restart_job_url =  f'https://icon7-8080.iconluxury.today/api/v7/warehouse/batch-query-and-populate/{file_id_for_db}?limit=9500&currency=USD' 
-    # Send the POST request to restart the search job
-    async with aiohttp.ClientSession() as session:
-        async with session.post(
-            restart_job_url,
-            headers={"accept": "application/json"}
-        ) as response:
-            if response.status == 200:
-                default_logger.info(f"Successfully triggered restart search job for file ID {file_id_for_db}")
-            else:
-                default_logger.error(f"Failed to trigger restart search job for file ID {file_id_for_db}: {response.status}")
-                # Optionally, you could raise an exception or continue without failing the email
-                # raise HTTPException(status_code=500, detail=f"Failed to trigger restart job: {response.status}")
+
     BATCH_SIZE_PER_GATHER = max(1, min(20, num_workers * 2))
     MAX_CONCURRENT_ENTRY_PROCESSING = max(num_workers, 5)
     MAX_ENTRY_ATTEMPTS = 3
