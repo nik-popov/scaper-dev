@@ -582,7 +582,7 @@ async def run_job_with_logging(
 async def run_generate_download_file(
     file_id: str,
     parent_logger: logging.Logger,
-    type: str = "image",
+    input_type: str = "image",
     background_tasks: Optional[BackgroundTasks] = None
 ) -> None:
     """Generate download file for given file_id."""
@@ -651,9 +651,9 @@ async def run_generate_download_file(
                 raise
 
         # Determine file generation endpoint based on msrp_target
-        if msrp_target and type == "msrp":
+        if input_type == "msrp":
             file_generation_endpoint = f"https://icon5-8081.iconluxury.today/generate-msrp-excel/?file_id={file_id}&target_column={msrp_target}"
-        if type == "image":
+        if input_type == "image":
             file_generation_endpoint = f"https://icon5-8081.iconluxury.today/generate-download-file/?file_id={file_id}&row_offset=0"
         parent_logger.info(f"{log_prefix} Calling file generation service: {file_generation_endpoint}")
 
