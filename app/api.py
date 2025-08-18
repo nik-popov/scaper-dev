@@ -886,7 +886,7 @@ async def process_restart_batch(
             "last_entry_id_processed": str(entry_id or ""),
         }
         # Construct the restart job URL
-    restart_job_url =  f'https://icon7-8080.iconluxury.today/api/v7/restart-job/{file_id_for_db}?use_all_variations=false&num_workers_hint=8' 
+    restart_job_url =  f'https://icon7-8080.iconluxury.today/api/v7/warehouse/batch-query-and-populate/{file_id_for_db}?limit=9500&currency=USD' 
     # Send the POST request to restart the search job
     async with aiohttp.ClientSession() as session:
         async with session.post(
