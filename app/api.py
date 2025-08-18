@@ -579,18 +579,12 @@ async def run_job_with_logging(
         "data": result_payload, 
         "debug_info": debug_info
     }
-import datetime
-import logging
-import httpx
-from typing import Optional
-from fastapi import BackgroundTasks
-from sqlalchemy.sql import text
-
 async def run_generate_download_file(
     file_id: str,
     parent_logger: logging.Logger,
-    background_tasks: Optional[BackgroundTasks]
-):
+    background_tasks: Optional[BackgroundTasks] = None
+) -> None:
+    """Generate download file for given file_id."""
     log_prefix = f"[GenerateDownloadFile Client | FileID {file_id}]"
     parent_logger.info(f"{log_prefix} Initiating request to generate download file.")
     job_key = f"generate_download_{file_id}"
@@ -643,6 +637,7 @@ async def run_generate_download_file(
                     "message": f"HTTP error fetching InputConfigURL: {hse.response.status_code}",
                     "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
                 })
+                raise
             except Exception as e:
                 parent_logger.error(
                     f"{log_prefix} Unexpected error fetching InputConfigURL {input_config_url}: {str(e)}"
@@ -652,9 +647,10 @@ async def run_generate_download_file(
                     "message": f"Unexpected error fetching InputConfigURL: {str(e)}",
                     "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
                 })
+                raise
 
         # Determine file generation endpoint based on msrp_target
-        if msrp_target is not None or msrp_target == "NULL":
+        if msrp_target and msrp_target != "NULL":
             file_generation_endpoint = f"https://icon5-8081.iconluxury.today/generate-msrp-excel/?file_id={file_id}&target_column={msrp_target}"
         else:
             file_generation_endpoint = f"https://icon5-8081.iconluxury.today/generate-download-file/?file_id={file_id}&row_offset=0"
@@ -676,7 +672,10 @@ async def run_generate_download_file(
                 "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
             })
             parent_logger.info(f"{log_prefix} File generation successful. URL: {service_response_data['public_url']}")
-            await update_file_location_complete(file_id, service_response_data["public_url"], parent_logger)
+            if background_tasks:
+                background_tasks.add_task(update_file_location_complete, file_id, service_response_data["public_url"], parent_logger)
+            else:
+                await update_file_location_complete(file_id, service_response_data["public_url"], parent_logger)
         else:
             error_detail = service_response_data.get("error", service_response_data.get("message", "Unknown issue from generation service."))
             JOB_STATUS[job_key].update({
@@ -685,6 +684,7 @@ async def run_generate_download_file(
                 "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
             })
             parent_logger.error(f"{log_prefix} File generation service reported failure: {error_detail}. Response: {service_response_data}")
+            raise Exception(f"File generation failed: {error_detail}")
     except httpx.HTTPStatusError as hse:
         parent_logger.error(
             f"{log_prefix} HTTP error calling file generation service: Status {hse.response.status_code}, Response: {hse.response.text}",
@@ -695,6 +695,7 @@ async def run_generate_download_file(
             "message": f"HTTP error with generation service: {hse.response.status_code}",
             "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
         })
+        raise
     except Exception as e:
         parent_logger.error(f"{log_prefix} Unexpected error during file generation request: {str(e)}", exc_info=True)
         JOB_STATUS[job_key].update({
@@ -702,6 +703,7 @@ async def run_generate_download_file(
             "message": f"Unexpected error: {str(e)}",
             "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
         })
+        raise
 async def upload_log_file(
     job_id_for_s3_path: str,
     local_log_file_path: str,
