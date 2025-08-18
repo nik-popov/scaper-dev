@@ -582,6 +582,7 @@ async def run_job_with_logging(
 async def run_generate_download_file(
     file_id: str,
     parent_logger: logging.Logger,
+    type: str = "image",
     background_tasks: Optional[BackgroundTasks] = None
 ) -> None:
     """Generate download file for given file_id."""
@@ -650,12 +651,10 @@ async def run_generate_download_file(
                 raise
 
         # Determine file generation endpoint based on msrp_target
-        restart_flag = None
-        if msrp_target:
+        if msrp_target and type == "msrp":
             file_generation_endpoint = f"https://icon5-8081.iconluxury.today/generate-msrp-excel/?file_id={file_id}&target_column={msrp_target}"
-        else:
+        if type == "image":
             file_generation_endpoint = f"https://icon5-8081.iconluxury.today/generate-download-file/?file_id={file_id}&row_offset=0"
-            restart_flag = True
         parent_logger.info(f"{log_prefix} Calling file generation service: {file_generation_endpoint}")
 
         async with httpx.AsyncClient(timeout=300.0) as client:
@@ -679,28 +678,6 @@ async def run_generate_download_file(
                 background_tasks.add_task(update_file_location_complete, file_id, service_response_data["public_url"], parent_logger)
             else:
                 await update_file_location_complete(file_id, service_response_data["public_url"], parent_logger)
-        if restart_flag:
-            # Construct the restart job URL
-            restart_flag = None
-            step_one =  f'https://icon7-8080.iconluxury.today/api/v7/warehouse/batch-query-and-populate/{file_id}?limit=9500&currency=USD' 
-            # Send the POST request to restart the search job
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    step_one,
-                    headers={"accept": "application/json"}
-                ) as response:
-                    if response.status == 200:
-                        default_logger.info(f"Successfully triggered restart search job for file ID {file_id}")
-                    else:
-                        default_logger.error(f"Failed to trigger restart search job for file ID {file_id}: {response.status}")
-                        # Optionally, you could raise an exception or continue without failing the email
-                        # raise HTTPException(status_code=500, detail=f"Failed to trigger restart job: {response.status}")
-            restart_job_url = f"https://icon7-8080.iconluxury.today/api/v7/restart-job/{file_id}"
-            async with httpx.AsyncClient(timeout=300.0) as client:
-                response = await client.post(restart_job_url, headers={"accept": "application/json"})
-                response.raise_for_status()
-                restart_service_response_data = response.json()
-
             parent_logger.info(f"{log_prefix} Response from file generation service: {restart_service_response_data}")
                 
         elif service_response_data.get("message") == "Processing started. You will be notified upon completion.":
@@ -1215,7 +1192,7 @@ async def process_restart_batch(
         # Bypassing sort order update to keep original insertion order
         # await update_sort_order(file_id_db_str, logger=logger, background_tasks=background_tasks)
         # logger.info(f"FileID {file_id_for_db}: Sort order update bypassed.")
-        await run_generate_download_file(file_id_db_str, logger, background_tasks)
+        await run_generate_download_file(file_id_db_str, logger,'image', background_tasks)
         logger.info(
             f"FileID {file_id_for_db}: Download file generation task initiated."
         )
@@ -2498,7 +2475,7 @@ async def api_warehouse_batch_query_and_populate(
         logger.info(f"[{job_run_id}] {summary_msg}")
 
         final_log_url = await upload_log_file(job_run_id, log_file_path, logger, db_record_file_id_to_update=file_id)
-        await run_generate_download_file(file_id, logger)
+        await run_generate_download_file(file_id, logger,'msrp')
         logger.info(f"[{job_run_id}] FileID {file_id}: Download file generation task initiated.")
         return {
             "status": "completed",
