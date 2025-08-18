@@ -618,7 +618,7 @@ async def run_generate_download_file(
                 raise Exception(f"FileID {file_id_int} not found.")
             input_config_url = file_info_result[0] if file_info_result[0] else None
             parent_logger.info(f"{log_prefix} Retrieved InputConfigURL: {input_config_url}")
-
+        msrp_target = None
         if input_config_url:
             try:
                 async with httpx.AsyncClient(timeout=30.0) as client:
