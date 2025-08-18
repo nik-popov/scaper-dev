@@ -650,10 +650,12 @@ async def run_generate_download_file(
                 raise
 
         # Determine file generation endpoint based on msrp_target
+        restart_flag = None
         if msrp_target and not None:
             file_generation_endpoint = f"https://icon5-8081.iconluxury.today/generate-msrp-excel/?file_id={file_id}&target_column={msrp_target}"
         else:
             file_generation_endpoint = f"https://icon5-8081.iconluxury.today/generate-download-file/?file_id={file_id}&row_offset=0"
+            restart_flag = True
         parent_logger.info(f"{log_prefix} Calling file generation service: {file_generation_endpoint}")
 
         async with httpx.AsyncClient(timeout=300.0) as client:
@@ -662,7 +664,7 @@ async def run_generate_download_file(
             service_response_data = response.json()
         
         parent_logger.info(f"{log_prefix} Response from file generation service: {service_response_data}")
-
+    
         # Handle service response
         if service_response_data.get("public_url"):
             JOB_STATUS[job_key].update({
@@ -672,6 +674,15 @@ async def run_generate_download_file(
                 "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
             })
             parent_logger.info(f"{log_prefix} File generation successful. URL: {service_response_data['public_url']}")
+            if restart_flag:
+                restart_job_url = f"https://icon7-8080.iconluxury.today/api/v7/restart-job/?file_id={file_id}"
+                async with httpx.AsyncClient(timeout=300.0) as client:
+                     response = await client.post(restart_job_url, headers={"accept": "application/json"})
+                     response.raise_for_status()
+                     service_response_data = response.json()
+
+                parent_logger.info(f"{log_prefix} Response from file generation service: {service_response_data}")
+    
             if background_tasks:
                 background_tasks.add_task(update_file_location_complete, file_id, service_response_data["public_url"], parent_logger)
             else:
