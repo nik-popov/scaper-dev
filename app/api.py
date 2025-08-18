@@ -651,7 +651,7 @@ async def run_generate_download_file(
 
         # Determine file generation endpoint based on msrp_target
         restart_flag = None
-        if msrp_target and not None:
+        if msrp_target:
             file_generation_endpoint = f"https://icon5-8081.iconluxury.today/generate-msrp-excel/?file_id={file_id}&target_column={msrp_target}"
         else:
             file_generation_endpoint = f"https://icon5-8081.iconluxury.today/generate-download-file/?file_id={file_id}&row_offset=0"
@@ -681,6 +681,7 @@ async def run_generate_download_file(
                 await update_file_location_complete(file_id, service_response_data["public_url"], parent_logger)
         if restart_flag:
             # Construct the restart job URL
+            restart_flag = None
             step_one =  f'https://icon7-8080.iconluxury.today/api/v7/warehouse/batch-query-and-populate/{file_id}?limit=9500&currency=USD' 
             # Send the POST request to restart the search job
             async with aiohttp.ClientSession() as session:
