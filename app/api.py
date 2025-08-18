@@ -654,14 +654,21 @@ async def run_generate_download_file(
         if input_type == "image" or (input_type == "msrp" and not msrp_target):
             file_generation_endpoint = f"https://icon5-8081.iconluxury.today/generate-download-file/?file_id={file_id}&row_offset=0"
         parent_logger.info(f"{log_prefix} Calling file generation service: {file_generation_endpoint}")
-
         async with httpx.AsyncClient(timeout=300.0) as client:
             response = await client.post(file_generation_endpoint, headers={"accept": "application/json"})
             response.raise_for_status()
             service_response_data = response.json()
         
         parent_logger.info(f"{log_prefix} Response from file generation service: {service_response_data}")
-    
+        if input_type == "image" and msrp_target is None:
+            run_scrape_job = f"https://icon7-8080.iconluxury.today/api/v7/restart-job/{file_id}"
+        parent_logger.info(f"{log_prefix} Calling file generation service: {file_generation_endpoint}")
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            response = await client.post(run_scrape_job, headers={"accept": "application/json"})
+            response.raise_for_status()
+            service_response_data = response.json()
+        
+        parent_logger.info(f"{log_prefix} Response from file generation service: {service_response_data}")
         # Handle service response
         if service_response_data.get("public_url"):
             JOB_STATUS[job_key].update({
