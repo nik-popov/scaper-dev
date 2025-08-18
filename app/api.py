@@ -678,7 +678,6 @@ async def run_generate_download_file(
                 background_tasks.add_task(update_file_location_complete, file_id, service_response_data["public_url"], parent_logger)
             else:
                 await update_file_location_complete(file_id, service_response_data["public_url"], parent_logger)
-            parent_logger.info(f"{log_prefix} Response from file generation service: {restart_service_response_data}")
                 
         elif service_response_data.get("message") == "Processing started. You will be notified upon completion.":
             JOB_STATUS[job_key].update({
