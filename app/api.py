@@ -2177,12 +2177,7 @@ async def api_warehouse_batch_query(
         logger.info(f"[{job_run_id}] {final_message}")
         final_log_s3_url = await upload_log_file(
             job_run_id, log_file_path, logger, db_record_file_id_to_update=file_id
-        )
-
-        await run_generate_download_file(file_id, logger)
-        logger.info(
-                f"FileID {file_id}: Download file generation task initiated."
-            )
+        )   
         final_email = user_email_from_db or email
         
         logger.info(f"[{job_run_id}] Email sending check - final_email: {final_email} (from DB: {user_email_from_db}, from query: {email}), csv_s3_url: {csv_s3_url}")
