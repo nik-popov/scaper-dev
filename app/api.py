@@ -650,7 +650,7 @@ async def run_generate_download_file(
                 raise
 
         # Determine file generation endpoint based on msrp_target
-        if msrp_target and msrp_target != "NULL":
+        if msrp_target and not None:
             file_generation_endpoint = f"https://icon5-8081.iconluxury.today/generate-msrp-excel/?file_id={file_id}&target_column={msrp_target}"
         else:
             file_generation_endpoint = f"https://icon5-8081.iconluxury.today/generate-download-file/?file_id={file_id}&row_offset=0"
@@ -2482,7 +2482,8 @@ async def api_warehouse_batch_query_and_populate(
         logger.info(f"[{job_run_id}] {summary_msg}")
 
         final_log_url = await upload_log_file(job_run_id, log_file_path, logger, db_record_file_id_to_update=file_id)
-        
+        await run_generate_download_file(file_id, logger)
+        logger.info(f"[{job_run_id}] FileID {file_id}: Download file generation task initiated.")
         return {
             "status": "completed",
             "message": summary_msg,
