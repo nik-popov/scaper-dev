@@ -297,6 +297,7 @@ def verify_and_process_image(image_path: str, logger_instance: logging.Logger) -
         return resize_image(image_path, logger_instance)
     except Exception:
         logger_instance.error(f"Image verification failed for {image_path}", exc_info=True); return False
+
 from openpyxl.drawing.spreadsheet_drawing import TwoCellAnchor, AnchorMarker
 from openpyxl.drawing.xdr import XDRPositiveSize2D
 from openpyxl.utils.units import pixels_to_EMU, points_to_pixels
@@ -331,9 +332,9 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
             ws.row_dimensions[row_num].height = DEFAULT_ROW_HEIGHT_POINTS
 
     # Default cell dimensions for centering (in points)
-    CELL_WIDTH_POINTS = 15  # Fixed width for column A, adjustable for even margins
+    CELL_WIDTH_POINTS = 20  # Increased width for column A to ensure sufficient margins
     CELL_HEIGHT_POINTS = max(DEFAULT_ROW_HEIGHT_POINTS, 150)  # Ensure cell is tall enough for centering
-    PADDING_POINTS = 2  # Padding to add around the image for even margins
+    PADDING_POINTS = 4  # Increased padding for even margins on both sides
 
     for row_id in range(min_row_id, max_row_id + 1):
         row_num = row_id + header_row  # This ensures we start writing after the header row
@@ -412,6 +413,7 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
     logger_instance.info("Setting worksheet view to A1.")
     wb.save(local_filename)
     logger_instance.info(f"Excel file saved: {local_filename}")
+
 def write_excel_generic(local_filename: str, temp_dir: str, header_row: int, row_offset: int, logger_instance: logging.Logger):
     try:
         wb = load_workbook(local_filename); ws = wb.active
