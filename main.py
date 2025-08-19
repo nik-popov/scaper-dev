@@ -332,9 +332,9 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
             ws.row_dimensions[row_num].height = DEFAULT_ROW_HEIGHT_POINTS
 
     # Default cell dimensions for centering (in points)
-    CELL_WIDTH_POINTS = 20  # Increased width for column A to ensure sufficient margins
+    CELL_WIDTH_POINTS = 20  # Fixed width for column A
     CELL_HEIGHT_POINTS = max(DEFAULT_ROW_HEIGHT_POINTS, 150)  # Ensure cell is tall enough for centering
-    PADDING_POINTS = 4  # Increased padding for even margins on both sides
+    PADDING_POINTS = 4  # Padding for even margins on both sides
 
     for row_id in range(min_row_id, max_row_id + 1):
         row_num = row_id + header_row  # This ensures we start writing after the header row
@@ -363,8 +363,8 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                     x_offset_pixels = (cell_width_pixels - img_width_pixels) / 2
                     y_offset_pixels = (cell_height_pixels - img_height_pixels) / 2
 
-                    # Ensure offsets are non-negative
-                    x_offset_pixels = max(0, x_offset_pixels)
+                    # Ensure offsets are non-negative and add a small correction for left alignment
+                    x_offset_pixels = max(0, x_offset_pixels + 2)  # Add 2 pixels to nudge right
                     y_offset_pixels = max(0, y_offset_pixels)
 
                     # Convert offsets to EMU (Excel's internal unit)
@@ -380,7 +380,7 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                     anchor.ext = XDRPositiveSize2D(pixels_to_EMU(img_width_pixels), pixels_to_EMU(img_height_pixels))
                     img.anchor = anchor
                     ws.add_image(img)
-                    logger_instance.info(f"Added centered image for Row {row_id} at Excel row {row_num}, height={CELL_HEIGHT_POINTS} points, width={ws.column_dimensions['A'].width} points, x_offset={x_offset_pixels:.2f}px, y_offset={y_offset_pixels:.2f}px")
+                    logger_instance.info(f"Added centered image for Row {row_id} at Excel row {row_num}, height={CELL_HEIGHT_POINTS} points, width={ws.column_dimensions['A'].width} points, x_offset={x_offset_pixels:.2f}px, y_offset={y_offset_pixels:.2f}px, img_width={img_width_pixels}px, cell_width={cell_width_pixels:.2f}px")
                 else:
                     logger_instance.warning(f"Image processing failed for Row {row_id}, writing metadata only")
             else:
