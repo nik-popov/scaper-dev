@@ -31,9 +31,6 @@ from functools import partial
 from app_config import engine, conn_str
 from email_utils import send_email, send_message_email
 from s3_utils import upload_file_to_space
-from openpyxl.drawing.spreadsheet_drawing import TwoCellAnchor, AnchorMarker
-from openpyxl.drawing.xdr import XDRPositiveSize2D
-from openpyxl.utils.units import pixels_to_EMU, points_to_pixels
 
 # --- Global Setup ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -300,6 +297,9 @@ def verify_and_process_image(image_path: str, logger_instance: logging.Logger) -
         return resize_image(image_path, logger_instance)
     except Exception:
         logger_instance.error(f"Image verification failed for {image_path}", exc_info=True); return False
+from openpyxl.drawing.spreadsheet_drawing import TwoCellAnchor, AnchorMarker
+from openpyxl.drawing.xdr import XDRPositiveSize2D
+from openpyxl.utils.units import pixels_to_EMU, points_to_pixels
 
 def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, logger_instance: logging.Logger):
     header_row = int(header_row)
@@ -331,8 +331,9 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
             ws.row_dimensions[row_num].height = DEFAULT_ROW_HEIGHT_POINTS
 
     # Default cell dimensions for centering (in points)
-    CELL_WIDTH_POINTS = max(20, DEFAULT_ROW_HEIGHT_POINTS)  # Ensure cell is wide enough
+    CELL_WIDTH_POINTS = 15  # Fixed width for column A, adjustable for even margins
     CELL_HEIGHT_POINTS = max(DEFAULT_ROW_HEIGHT_POINTS, 150)  # Ensure cell is tall enough for centering
+    PADDING_POINTS = 2  # Padding to add around the image for even margins
 
     for row_id in range(min_row_id, max_row_id + 1):
         row_num = row_id + header_row  # This ensures we start writing after the header row
@@ -349,11 +350,12 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                     img_height_points = img_height_pixels * 72 / 96
                     img_width_points = img_width_pixels * 0.132  # Approximate pixels to Excel column width
 
-                    # Set column width to ensure centering
-                    ws.column_dimensions['A'].width = max(ws.column_dimensions['A'].width or 0, CELL_WIDTH_POINTS)
+                    # Set column A width to image width plus padding, but cap at CELL_WIDTH_POINTS
+                    required_width = img_width_points + PADDING_POINTS * 2  # Add padding on both sides
+                    ws.column_dimensions['A'].width = min(CELL_WIDTH_POINTS, max(ws.column_dimensions['A'].width or 0, required_width))
 
                     # Calculate cell dimensions in pixels
-                    cell_width_pixels = points_to_pixels(CELL_WIDTH_POINTS)
+                    cell_width_pixels = points_to_pixels(ws.column_dimensions['A'].width)
                     cell_height_pixels = points_to_pixels(CELL_HEIGHT_POINTS)
 
                     # Calculate offsets to center the image
@@ -377,7 +379,7 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                     anchor.ext = XDRPositiveSize2D(pixels_to_EMU(img_width_pixels), pixels_to_EMU(img_height_pixels))
                     img.anchor = anchor
                     ws.add_image(img)
-                    logger_instance.info(f"Added centered image for Row {row_id} at Excel row {row_num}, height={CELL_HEIGHT_POINTS} points, width={CELL_WIDTH_POINTS} points, x_offset={x_offset_pixels:.2f}px, y_offset={y_offset_pixels:.2f}px")
+                    logger_instance.info(f"Added centered image for Row {row_id} at Excel row {row_num}, height={CELL_HEIGHT_POINTS} points, width={ws.column_dimensions['A'].width} points, x_offset={x_offset_pixels:.2f}px, y_offset={y_offset_pixels:.2f}px")
                 else:
                     logger_instance.warning(f"Image processing failed for Row {row_id}, writing metadata only")
             else:
@@ -410,7 +412,6 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
     logger_instance.info("Setting worksheet view to A1.")
     wb.save(local_filename)
     logger_instance.info(f"Excel file saved: {local_filename}")
-
 def write_excel_generic(local_filename: str, temp_dir: str, header_row: int, row_offset: int, logger_instance: logging.Logger):
     try:
         wb = load_workbook(local_filename); ws = wb.active
