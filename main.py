@@ -341,24 +341,15 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                     img_height_points = img_height_pixels * 72 / 96
                     img_width_points = img_width_pixels * 0.132  # Approximate pixels to Excel column width
 
-                    # Set column width to accommodate image
+                    # Set column width and row height to center the image
                     ws.column_dimensions['A'].width = max(ws.column_dimensions['A'].width or 0, img_width_points)
+                    ws.row_dimensions[row_num].height = max(DEFAULT_ROW_HEIGHT_POINTS, img_height_points)
 
-                    # Calculate offsets to center the image in the cell
-                    cell_width_points = ws.column_dimensions['A'].width or 10  # Default width if not set
-                    cell_height_points = max(DEFAULT_ROW_HEIGHT_POINTS, img_height_points)
-                    ws.row_dimensions[row_num].height = cell_height_points
-
-                    x_offset = (cell_width_points - img_width_points) / 2 * 96 / 72  # Convert points to pixels
-                    y_offset = (cell_height_points - img_height_points) / 2  # Already in points
-
-                    # Set anchor with offsets for centering
+                    # Set cell alignment to center
+                    ws[f"A{row_num}"].alignment = ws[f"A{row_num}"].alignment.copy(horizontal='center', vertical='center')
                     img.anchor = f"A{row_num}"
-                    img.anchor_type = 'absolute'
-                    img.drawing.left = int(x_offset * 96 / 72)  # Convert points to pixels for drawing
-                    img.drawing.top = int(y_offset * 96 / 72)   # Convert points to pixels for drawing
                     ws.add_image(img)
-                    logger_instance.info(f"Added centered image for Row {row_id} at Excel row {row_num}, height set to {ws.row_dimensions[row_num].height} points, x_offset={x_offset:.2f}, y_offset={y_offset:.2f}")
+                    logger_instance.info(f"Added centered image for Row {row_id} at Excel row {row_num}, height set to {ws.row_dimensions[row_num].height} points, width set to {ws.column_dimensions['A'].width} points")
                 else:
                     logger_instance.warning(f"Image processing failed for Row {row_id}, writing metadata only")
             else:
