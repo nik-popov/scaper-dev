@@ -297,6 +297,10 @@ def verify_and_process_image(image_path: str, logger_instance: logging.Logger) -
         return resize_image(image_path, logger_instance)
     except Exception:
         logger_instance.error(f"Image verification failed for {image_path}", exc_info=True); return False
+from openpyxl.drawing.spreadsheet_drawing import TwoCellAnchor, AnchorMarker
+from openpyxl.drawing.xdr import XDRPositiveSize2D
+from openpyxl.utils.units import pixels_to_EMU, points_to_pixels
+
 def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, logger_instance: logging.Logger):
     header_row = int(header_row)
     wb = load_workbook(local_filename)
@@ -341,15 +345,33 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                     img_height_points = img_height_pixels * 72 / 96
                     img_width_points = img_width_pixels * 0.132  # Approximate pixels to Excel column width
 
-                    # Set column width and row height to center the image
+                    # Set column width and row height to accommodate image
                     ws.column_dimensions['A'].width = max(ws.column_dimensions['A'].width or 0, img_width_points)
                     ws.row_dimensions[row_num].height = max(DEFAULT_ROW_HEIGHT_POINTS, img_height_points)
 
-                    # Set cell alignment to center
-                    ws[f"A{row_num}"].alignment = ws[f"A{row_num}"].alignment.copy(horizontal='center', vertical='center')
-                    img.anchor = f"A{row_num}"
+                    # Calculate cell dimensions in pixels
+                    cell_width_pixels = points_to_pixels(ws.column_dimensions['A'].width or 10)
+                    cell_height_pixels = points_to_pixels(ws.row_dimensions[row_num].height)
+
+                    # Calculate offsets to center the image
+                    x_offset_pixels = (cell_width_pixels - img_width_pixels) / 2
+                    y_offset_pixels = (cell_height_pixels - img_height_pixels) / 2
+
+                    # Convert offsets to EMU (Excel's internal unit)
+                    x_offset_emu = pixels_to_EMU(x_offset_pixels)
+                    y_offset_emu = pixels_to_EMU(y_offset_pixels)
+
+                    # Create a TwoCellAnchor to position the image
+                    anchor = TwoCellAnchor(
+                        editAs='absolute',
+                        _from=AnchorMarker(col=0, colOff=x_offset_emu, row=row_num - 1, rowOff=y_offset_emu),
+                        to=AnchorMarker(col=0, colOff=x_offset_emu + pixels_to_EMU(img_width_pixels), row=row_num - 1, rowOff=y_offset_emu + pixels_to_EMU(img_height_pixels))
+                    )
+                    anchor.ext = XDRPositiveSize2D(pixels_to_EMU(img_width_pixels), pixels_to_EMU(img_height_pixels))
+                    anchor.graphicalProperties.ln = None  # Remove border
+                    img.anchor = anchor
                     ws.add_image(img)
-                    logger_instance.info(f"Added centered image for Row {row_id} at Excel row {row_num}, height set to {ws.row_dimensions[row_num].height} points, width set to {ws.column_dimensions['A'].width} points")
+                    logger_instance.info(f"Added centered image for Row {row_id} at Excel row {row_num}, height={ws.row_dimensions[row_num].height} points, width={ws.column_dimensions['A'].width} points, x_offset={x_offset_pixels:.2f}px, y_offset={y_offset_pixels:.2f}px")
                 else:
                     logger_instance.warning(f"Image processing failed for Row {row_id}, writing metadata only")
             else:
@@ -382,6 +404,7 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
     logger_instance.info("Setting worksheet view to A1.")
     wb.save(local_filename)
     logger_instance.info(f"Excel file saved: {local_filename}")
+
     
 def write_excel_generic(local_filename: str, temp_dir: str, header_row: int, row_offset: int, logger_instance: logging.Logger):
     try:
