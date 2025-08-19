@@ -298,9 +298,7 @@ def verify_and_process_image(image_path: str, logger_instance: logging.Logger) -
     except Exception:
         logger_instance.error(f"Image verification failed for {image_path}", exc_info=True); return False
 
-from openpyxl.drawing.spreadsheet_drawing import TwoCellAnchor, AnchorMarker
-from openpyxl.drawing.xdr import XDRPositiveSize2D
-from openpyxl.utils.units import pixels_to_EMU, points_to_pixels
+from openpyxl.utils.units import points_to_pixels
 
 def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, logger_instance: logging.Logger):
     header_row = int(header_row)
@@ -332,9 +330,8 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
             ws.row_dimensions[row_num].height = DEFAULT_ROW_HEIGHT_POINTS
 
     # Default cell dimensions for centering (in points)
-    CELL_WIDTH_POINTS = 20  # Fixed width for column A
     CELL_HEIGHT_POINTS = max(DEFAULT_ROW_HEIGHT_POINTS, 150)  # Ensure cell is tall enough for centering
-    PADDING_POINTS = 4  # Padding for even margins on both sides
+    PADDING_POINTS = 5  # Increased padding for even margins on both sides
 
     for row_id in range(min_row_id, max_row_id + 1):
         row_num = row_id + header_row  # This ensures we start writing after the header row
@@ -351,36 +348,23 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                     img_height_points = img_height_pixels * 72 / 96
                     img_width_points = img_width_pixels * 0.132  # Approximate pixels to Excel column width
 
-                    # Set column A width to image width plus padding, but cap at CELL_WIDTH_POINTS
+                    # Set column A width to exactly image width plus padding
                     required_width = img_width_points + PADDING_POINTS * 2  # Add padding on both sides
-                    ws.column_dimensions['A'].width = min(CELL_WIDTH_POINTS, max(ws.column_dimensions['A'].width or 0, required_width))
+                    ws.column_dimensions['A'].width = required_width
 
-                    # Calculate cell dimensions in pixels
+                    # Calculate cell dimensions in pixels for logging
                     cell_width_pixels = points_to_pixels(ws.column_dimensions['A'].width)
                     cell_height_pixels = points_to_pixels(CELL_HEIGHT_POINTS)
 
-                    # Calculate offsets to center the image
-                    x_offset_pixels = (cell_width_pixels - img_width_pixels) / 2
-                    y_offset_pixels = (cell_height_pixels - img_height_pixels) / 2
+                    # Calculate expected margins for logging
+                    left_margin_pixels = (cell_width_pixels - img_width_pixels) / 2
+                    top_margin_pixels = (cell_height_pixels - img_height_pixels) / 2
 
-                    # Ensure offsets are non-negative and add a small correction for left alignment
-                    x_offset_pixels = max(0, x_offset_pixels + 2)  # Add 2 pixels to nudge right
-                    y_offset_pixels = max(0, y_offset_pixels)
-
-                    # Convert offsets to EMU (Excel's internal unit)
-                    x_offset_emu = pixels_to_EMU(x_offset_pixels)
-                    y_offset_emu = pixels_to_EMU(y_offset_pixels)
-
-                    # Create a TwoCellAnchor to position the image
-                    anchor = TwoCellAnchor(
-                        editAs='absolute',
-                        _from=AnchorMarker(col=0, colOff=x_offset_emu, row=row_num - 1, rowOff=y_offset_emu),
-                        to=AnchorMarker(col=0, colOff=x_offset_emu + pixels_to_EMU(img_width_pixels), row=row_num - 1, rowOff=y_offset_emu + pixels_to_EMU(img_height_pixels))
-                    )
-                    anchor.ext = XDRPositiveSize2D(pixels_to_EMU(img_width_pixels), pixels_to_EMU(img_height_pixels))
-                    img.anchor = anchor
+                    # Anchor image to cell A{row_num} with center alignment
+                    img.anchor = f"A{row_num}"
+                    ws[f"A{row_num}"].alignment = ws[f"A{row_num}"].alignment.copy(horizontal='center', vertical='center')
                     ws.add_image(img)
-                    logger_instance.info(f"Added centered image for Row {row_id} at Excel row {row_num}, height={CELL_HEIGHT_POINTS} points, width={ws.column_dimensions['A'].width} points, x_offset={x_offset_pixels:.2f}px, y_offset={y_offset_pixels:.2f}px, img_width={img_width_pixels}px, cell_width={cell_width_pixels:.2f}px")
+                    logger_instance.info(f"Added centered image for Row {row_id} at Excel row {row_num}, height={CELL_HEIGHT_POINTS} points, width={ws.column_dimensions['A'].width:.2f} points, img_width={img_width_pixels}px, cell_width={cell_width_pixels:.2f}px, left_margin={left_margin_pixels:.2f}px, top_margin={top_margin_pixels:.2f}px")
                 else:
                     logger_instance.warning(f"Image processing failed for Row {row_id}, writing metadata only")
             else:
