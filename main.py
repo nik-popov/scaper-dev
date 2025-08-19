@@ -297,7 +297,6 @@ def verify_and_process_image(image_path: str, logger_instance: logging.Logger) -
         return resize_image(image_path, logger_instance)
     except Exception:
         logger_instance.error(f"Image verification failed for {image_path}", exc_info=True); return False
-
 def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, logger_instance: logging.Logger):
     header_row = int(header_row)
     wb = load_workbook(local_filename)
@@ -337,15 +336,29 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                 image_path = os.path.join(temp_dir, image_map[row_id])
                 if verify_and_process_image(image_path, logger_instance):
                     img = Image(image_path)
+                    img_height_pixels = img.height if hasattr(img, 'height') else 0
+                    img_width_pixels = img.width if hasattr(img, 'width') else 0
+                    img_height_points = img_height_pixels * 72 / 96
+                    img_width_points = img_width_pixels * 0.132  # Approximate pixels to Excel column width
+
+                    # Set column width to accommodate image
+                    ws.column_dimensions['A'].width = max(ws.column_dimensions['A'].width or 0, img_width_points)
+
+                    # Calculate offsets to center the image in the cell
+                    cell_width_points = ws.column_dimensions['A'].width or 10  # Default width if not set
+                    cell_height_points = max(DEFAULT_ROW_HEIGHT_POINTS, img_height_points)
+                    ws.row_dimensions[row_num].height = cell_height_points
+
+                    x_offset = (cell_width_points - img_width_points) / 2 * 96 / 72  # Convert points to pixels
+                    y_offset = (cell_height_points - img_height_points) / 2  # Already in points
+
+                    # Set anchor with offsets for centering
                     img.anchor = f"A{row_num}"
                     img.anchor_type = 'absolute'
-                    ws.column_dimensions['A'].width = max(ws.column_dimensions['A'].width or 0, img.width * 0.132)  # Approximate pixels to Excel column width
-                    ws[f"A{row_num}"].alignment = ws[f"A{row_num}"].alignment.copy(horizontal='center', vertical='center')
+                    img.drawing.left = int(x_offset * 96 / 72)  # Convert points to pixels for drawing
+                    img.drawing.top = int(y_offset * 96 / 72)   # Convert points to pixels for drawing
                     ws.add_image(img)
-                    img_height_pixels = img.height if hasattr(img, 'height') else 0
-                    img_height_points = img_height_pixels * 72 / 96
-                    ws.row_dimensions[row_num].height = max(DEFAULT_ROW_HEIGHT_POINTS, img_height_points)
-                    logger_instance.info(f"Added centered image for Row {row_id} at Excel row {row_num}, height set to {ws.row_dimensions[row_num].height} points")
+                    logger_instance.info(f"Added centered image for Row {row_id} at Excel row {row_num}, height set to {ws.row_dimensions[row_num].height} points, x_offset={x_offset:.2f}, y_offset={y_offset:.2f}")
                 else:
                     logger_instance.warning(f"Image processing failed for Row {row_id}, writing metadata only")
             else:
@@ -378,7 +391,7 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
     logger_instance.info("Setting worksheet view to A1.")
     wb.save(local_filename)
     logger_instance.info(f"Excel file saved: {local_filename}")
-
+    
 def write_excel_generic(local_filename: str, temp_dir: str, header_row: int, row_offset: int, logger_instance: logging.Logger):
     try:
         wb = load_workbook(local_filename); ws = wb.active
@@ -389,16 +402,27 @@ def write_excel_generic(local_filename: str, temp_dir: str, header_row: int, row
             if verify_and_process_image(image_path, logger_instance):
                 img = Image(image_path)
                 adjusted_row = row_id + header_row + row_offset 
-                img.anchor = f"A{adjusted_row}"
-                img.anchor_type = 'absolute'
-                ws.column_dimensions['A'].width = max(ws.column_dimensions['A'].width or 0, img.width * 0.132)  # Approximate pixels to Excel column width
-                ws[f"A{adjusted_row}"].alignment = ws[f"A{adjusted_row}"].alignment.copy(horizontal='center', vertical='center')
-                ws.add_image(img)
+                img.anchor = f"A{adjusted_row}"; ws.add_image(img)
         logger_instance.info("Setting worksheet view to A1.")
         wb.save(local_filename)
     except Exception as e:
         logger_instance.error(f"Error writing to generic Excel file: {e}", exc_info=True)
         raise
+
+def find_header_row_index(excel_file: str, logger_instance: logging.Logger) -> Optional[int]:
+    try:
+        wb = load_workbook(excel_file, read_only=True); ws = wb.active
+        keywords = {'id', 'name', 'product', 'brand', 'sku', 'category', 'color', 'price', 'description'}
+        best_row, best_score = None, 0
+        for i, row in enumerate(ws.iter_rows(min_row=1, max_row=10, values_only=True), 1):
+            if not row: continue
+            cells = [str(c).strip().lower() for c in row if isinstance(c, str)]
+            score = len(cells) + len(set(cells)) + sum(any(k in c for k in keywords) for c in cells)
+            if score > best_score: best_score, best_row = score, i
+        if best_row and best_score > 3: return best_row
+        return None
+    except Exception as e:
+        logger_instance.error(f"Could not find header row: {e}"); return None
 
 def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, target_column: str, row_offset: int, logger_instance: logging.Logger):
     try:
@@ -445,14 +469,11 @@ def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict],
                     if verify_and_process_image(image_path, logger_instance):
                         img = Image(image_path)
                         img.anchor = f"A{row_num}"
-                        img.anchor_type = 'absolute'
-                        ws.column_dimensions['A'].width = max(ws.column_dimensions['A'].width or 0, img.width * 0.132)  # Approximate pixels to Excel column width
-                        ws[f"A{row_num}"].alignment = ws[f"A{row_num}"].alignment.copy(horizontal='center', vertical='center')
                         ws.add_image(img)
                         img_height_pixels = img.height if hasattr(img, 'height') else 0
                         img_height_points = img_height_pixels * 72 / 96
                         ws.row_dimensions[row_num].height = max(DEFAULT_ROW_HEIGHT_POINTS, img_height_points)
-                        logger_instance.info(f"Added centered image for Row {row_id} at Excel row {row_num}, height set to {ws.row_dimensions[row_num].height} points")
+                        logger_instance.info(f"Added image for Row {row_id} at Excel row {row_num}, height set to {ws.row_dimensions[row_num].height} points")
                     else:
                         logger_instance.warning(f"Image processing failed for Row {row_id}, writing MSRP only")
                 else:
