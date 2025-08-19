@@ -368,7 +368,6 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                         to=AnchorMarker(col=0, colOff=x_offset_emu + pixels_to_EMU(img_width_pixels), row=row_num - 1, rowOff=y_offset_emu + pixels_to_EMU(img_height_pixels))
                     )
                     anchor.ext = XDRPositiveSize2D(pixels_to_EMU(img_width_pixels), pixels_to_EMU(img_height_pixels))
-                    anchor.graphicalProperties.ln = None  # Remove border
                     img.anchor = anchor
                     ws.add_image(img)
                     logger_instance.info(f"Added centered image for Row {row_id} at Excel row {row_num}, height={ws.row_dimensions[row_num].height} points, width={ws.column_dimensions['A'].width} points, x_offset={x_offset_pixels:.2f}px, y_offset={y_offset_pixels:.2f}px")
@@ -404,8 +403,6 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
     logger_instance.info("Setting worksheet view to A1.")
     wb.save(local_filename)
     logger_instance.info(f"Excel file saved: {local_filename}")
-
-    
 def write_excel_generic(local_filename: str, temp_dir: str, header_row: int, row_offset: int, logger_instance: logging.Logger):
     try:
         wb = load_workbook(local_filename); ws = wb.active
