@@ -316,7 +316,7 @@ import logging
 def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, logger_instance: logging.Logger):
     """
     Write image and metadata to the Excel file for DISTRO type, with image processing to remove uniform lines
-    and sizing to fill full cell width or height based on aspect ratio, with no padding.
+    and sizing to exactly fill template cell size (width or height) based on aspect ratio, with no padding.
     
     Args:
         local_filename (str): Path to the Excel file.
@@ -436,16 +436,16 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                 ws.append([''] * ws.max_column)
                 ws.row_dimensions[row_num].height = DEFAULT_ROW_HEIGHT_POINTS
 
-        CELL_WIDTH_POINTS = 30  # ~216px, balanced for larger images
-        CELL_HEIGHT_POINTS = max(DEFAULT_ROW_HEIGHT_POINTS, 150)  # ~1080px
-        PADDING_POINTS = 0  # No padding to maximize image size
+        CELL_WIDTH_POINTS = 30  # ~216px, template cell width
+        CELL_HEIGHT_POINTS = max(DEFAULT_ROW_HEIGHT_POINTS, 150)  # ~1080px, template cell height
+        PADDING_POINTS = 0  # No padding to match template cell size
         CELL_WIDTH_PIXELS = points_to_pixels(CELL_WIDTH_POINTS)  # ~216px
         CELL_HEIGHT_PIXELS = points_to_pixels(CELL_HEIGHT_POINTS)  # ~1080px
         temp_files = []  # Track temporary processed images for cleanup
 
         for row_id in range(min_row_id, max_row_id + 1):
             row_num = row_id + header_row
-            ws.row_dimensions[row_num].height = CELL_HEIGHT_POINTS  # Set to exact cell height
+            ws.row_dimensions[row_num].height = CELL_HEIGHT_POINTS  # Match template cell height
 
             if row_id in row_data_map:
                 item = row_data_map[row_id]
@@ -454,7 +454,7 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                     if verify_and_process_image(image_path, logger_instance):
                         processed_img = process_image_remove_lines(image_path, logger_instance)
                         if processed_img:
-                            # Resize to fill full cell width or height based on aspect ratio
+                            # Resize to exactly fill template cell width or height based on aspect ratio
                             w, h = processed_img.size
                             width_ratio = CELL_WIDTH_PIXELS / w
                             height_ratio = CELL_HEIGHT_PIXELS / h
@@ -475,9 +475,9 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                             img_height_points = img_height_pixels * 72 / 96
                             img_width_points = img_width_pixels * 72 / 96  # 1pt = 0.75px at 96 DPI
 
-                            # Set column width and row height to exactly match image
-                            ws.column_dimensions['A'].width = img_width_points
-                            ws.row_dimensions[row_num].height = img_height_points
+                            # Set column width and row height to template cell size
+                            ws.column_dimensions['A'].width = CELL_WIDTH_POINTS
+                            ws.row_dimensions[row_num].height = CELL_HEIGHT_POINTS
 
                             cell_width_pixels = points_to_pixels(ws.column_dimensions['A'].width)
                             cell_height_pixels = points_to_pixels(ws.row_dimensions[row_num].height)
@@ -554,7 +554,6 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
     except Exception as e:
         logger_instance.error(f"Error writing to DISTRO Excel file: {e}", exc_info=True)
         raise
-
 def write_excel_generic(local_filename: str, temp_dir: str, header_row: int, row_offset: int, logger_instance: logging.Logger):
     try:
         wb = load_workbook(local_filename); ws = wb.active
