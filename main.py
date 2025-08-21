@@ -315,7 +315,8 @@ import logging
 
 def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, logger_instance: logging.Logger):
     """
-    Write image and metadata to the Excel file for DISTRO type, with image processing to remove uniform lines.
+    Write image and metadata to the Excel file for DISTRO type, with image processing to remove uniform lines
+    and proper sizing to fit within cell dimensions, matching unedited image behavior.
     
     Args:
         local_filename (str): Path to the Excel file.
@@ -440,6 +441,7 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
         CELL_WIDTH_POINTS = 25
         CELL_HEIGHT_POINTS = max(DEFAULT_ROW_HEIGHT_POINTS, 150)
         PADDING_POINTS = 5
+        CELL_WIDTH_PIXELS = points_to_pixels(CELL_WIDTH_POINTS) - points_to_pixels(PADDING_POINTS * 2)  # Available width for image
         temp_files = []  # Track temporary processed images for cleanup
 
         for row_id in range(min_row_id, max_row_id + 1):
@@ -453,6 +455,14 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                     if verify_and_process_image(image_path, logger_instance):
                         processed_img = process_image_remove_lines(image_path, logger_instance)
                         if processed_img:
+                            # Resize processed image to fit cell width, preserving aspect ratio
+                            w, h = processed_img.size
+                            if w > CELL_WIDTH_PIXELS:
+                                scale = CELL_WIDTH_PIXELS / w
+                                new_height = int(h * scale)
+                                processed_img = processed_img.resize((int(CELL_WIDTH_PIXELS), new_height), PILImage.Resampling.LANCZOS)
+                                logger_instance.info(f"Resized image for Row {row_id} to width={CELL_WIDTH_PIXELS}px, height={new_height}px")
+
                             temp_processed_path = os.path.join(temp_dir, f"processed_{row_id}.png")
                             processed_img.save(temp_processed_path, 'PNG')
                             temp_files.append(temp_processed_path)  # Track for later cleanup
@@ -461,10 +471,11 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                             img_height_pixels = img.height if hasattr(img, 'height') else 0
                             img_width_pixels = img.width if hasattr(img, 'width') else 0
                             img_height_points = img_height_pixels * 72 / 96
-                            img_width_points = img_width_pixels * 0.132
+                            img_width_points = img_width_pixels * 72 / 96  # Accurate pixel-to-point conversion
 
+                            # Set column width to accommodate image plus padding
                             required_width = img_width_points + PADDING_POINTS * 2
-                            ws.column_dimensions['A'].width = min(CELL_WIDTH_POINTS, max(ws.column_dimensions['A'].width or 0, required_width))
+                            ws.column_dimensions['A'].width = max(ws.column_dimensions['A'].width or 0, required_width)
 
                             cell_width_pixels = points_to_pixels(ws.column_dimensions['A'].width)
                             cell_height_pixels = points_to_pixels(CELL_HEIGHT_POINTS)
