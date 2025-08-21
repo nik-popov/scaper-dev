@@ -301,6 +301,18 @@ from openpyxl.drawing.spreadsheet_drawing import TwoCellAnchor, AnchorMarker
 from openpyxl.drawing.xdr import XDRPositiveSize2D
 from openpyxl.utils.units import pixels_to_EMU, points_to_pixels
 
+from PIL import Image as PILImage
+import numpy as np
+from openpyxl import load_workbook
+from openpyxl.drawing.image import Image
+from openpyxl.drawing.spreadsheet_drawing import TwoCellAnchor, AnchorMarker
+from openpyxl.drawing.xdr import XDRPositiveSize2D
+from openpyxl.utils.units import pixels_to_EMU, points_to_pixels
+from pathlib import Path
+import os
+from typing import List, Dict, Optional
+import logging
+
 def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, logger_instance: logging.Logger):
     """
     Write image and metadata to the Excel file for DISTRO type, with image processing to remove uniform lines.
@@ -312,16 +324,6 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
         header_row (int): Row index of the header in the Excel file.
         logger_instance (logging.Logger): Logger for tracking operations.
     """
-    from PIL import Image as PILImage
-    import numpy as np
-    from openpyxl import load_workbook
-    from openpyxl.drawing.image import Image
-    from openpyxl.drawing.spreadsheet_drawing import TwoCellAnchor, AnchorMarker
-    from openpyxl.drawing.xdr import XDRPositiveSize2D
-    from openpyxl.utils.units import pixels_to_EMU, points_to_pixels
-    from pathlib import Path
-    import os
-
     def get_valid_indices_with_padding(valid_indices, max_index, pad=5):
         """Identify indices with padding for non-uniform rows/columns."""
         padded = set()
@@ -438,6 +440,7 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
         CELL_WIDTH_POINTS = 25
         CELL_HEIGHT_POINTS = max(DEFAULT_ROW_HEIGHT_POINTS, 150)
         PADDING_POINTS = 5
+        temp_files = []  # Track temporary processed images for cleanup
 
         for row_id in range(min_row_id, max_row_id + 1):
             row_num = row_id + header_row
@@ -452,6 +455,7 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                         if processed_img:
                             temp_processed_path = os.path.join(temp_dir, f"processed_{row_id}.png")
                             processed_img.save(temp_processed_path, 'PNG')
+                            temp_files.append(temp_processed_path)  # Track for later cleanup
 
                             img = Image(temp_processed_path)
                             img_height_pixels = img.height if hasattr(img, 'height') else 0
@@ -490,10 +494,6 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                                 f"left_margin={(cell_width_pixels - img_width_pixels) / 2 + 10:.2f}px, "
                                 f"right_margin={(cell_width_pixels - img_width_pixels) / 2:.2f}px"
                             )
-                            try:
-                                os.remove(temp_processed_path)
-                            except Exception as e:
-                                logger_instance.warning(f"Failed to delete temporary image {temp_processed_path}: {e}")
                         else:
                             logger_instance.warning(f"Image processing failed for Row {row_id}, writing metadata only")
                     else:
@@ -527,6 +527,15 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
         ws.sheet_view.topLeftCell = 'A1'
         wb.save(local_filename)
         logger_instance.info(f"Excel file saved: {local_filename}")
+
+        # Clean up temporary processed images after saving
+        for temp_file in temp_files:
+            try:
+                os.remove(temp_file)
+                logger_instance.info(f"Deleted temporary image: {temp_file}")
+            except Exception as e:
+                logger_instance.warning(f"Failed to delete temporary image {temp_file}: {e}")
+
     except Exception as e:
         logger_instance.error(f"Error writing to DISTRO Excel file: {e}", exc_info=True)
         raise
