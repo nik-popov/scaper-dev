@@ -316,7 +316,7 @@ import logging
 def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, logger_instance: logging.Logger):
     """
     Write image and metadata to the Excel file for DISTRO type, with image processing to remove uniform lines
-    and sizing to maximize image size within cell, leaving small padding on top, right, left, and bottom.
+    and sizing to maximize image size within cell, matching unedited image display with small padding.
     
     Args:
         local_filename (str): Path to the Excel file.
@@ -436,10 +436,10 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                 ws.append([''] * ws.max_column)
                 ws.row_dimensions[row_num].height = DEFAULT_ROW_HEIGHT_POINTS
 
-        CELL_WIDTH_POINTS = 15  # Smaller cell width (~108px)
+        CELL_WIDTH_POINTS = 30  # Balanced width (~216px) for larger images
         CELL_HEIGHT_POINTS = max(DEFAULT_ROW_HEIGHT_POINTS, 150)
         PADDING_POINTS = 1  # Minimal padding (~0.75px per side)
-        CELL_WIDTH_PIXELS = points_to_pixels(CELL_WIDTH_POINTS) - points_to_pixels(PADDING_POINTS * 2)  # ~106.5px
+        CELL_WIDTH_PIXELS = points_to_pixels(CELL_WIDTH_POINTS) - points_to_pixels(PADDING_POINTS * 2)  # ~214.5px
         CELL_HEIGHT_PIXELS = points_to_pixels(CELL_HEIGHT_POINTS) - points_to_pixels(PADDING_POINTS * 2)  # ~1078.5px
         temp_files = []  # Track temporary processed images for cleanup
 
