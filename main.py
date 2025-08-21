@@ -300,17 +300,6 @@ def verify_and_process_image(image_path: str, logger_instance: logging.Logger) -
 from openpyxl.drawing.spreadsheet_drawing import TwoCellAnchor, AnchorMarker
 from openpyxl.drawing.xdr import XDRPositiveSize2D
 from openpyxl.utils.units import pixels_to_EMU, points_to_pixels
-from PIL import Image as PILImage
-import numpy as np
-from openpyxl import load_workbook
-from openpyxl.drawing.image import Image
-from openpyxl.drawing.spreadsheet_drawing import TwoCellAnchor, AnchorMarker
-from openpyxl.drawing.xdr import XDRPositiveSize2D
-from openpyxl.utils.units import pixels_to_EMU, points_to_pixels
-from pathlib import Path
-import os
-from typing import List, Dict, Optional
-import logging
 
 def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, logger_instance: logging.Logger):
     """
@@ -334,7 +323,7 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
         return sorted(padded)
 
     def process_image_remove_lines(image_path: str, logger_instance: logging.Logger) -> Optional[PILImage.Image]:
-        """Process image to remove uniform horizontal and vertical lines with padding."""
+        """Process image to remove uniform horizontal and vertical lines with padding. Use original if no cropping occurred."""
         try:
             img = PILImage.open(image_path).convert('RGB')
             arr = np.array(img)  # Shape: (height, width, 3)
@@ -346,6 +335,7 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                 logger_instance.warning(f"No non-uniform rows found in image: {image_path}")
                 return img
             rows_to_keep = get_valid_indices_with_padding(valid_row_indices, height - 1, pad=5)
+            row_cropped = len(rows_to_keep) != height
             arr = arr[rows_to_keep, :, :]
             logger_instance.info(f"Kept {len(rows_to_keep)} of {height} rows (with padding) for {image_path}")
 
@@ -354,9 +344,15 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
             new_width = arr_T.shape[0]
             valid_col_indices = [x for x in range(new_width) if not np.all(arr_T[x] == arr_T[x][0])]
             if not valid_col_indices:
-                logger_instance.warning(f"No non-uniform columns found in image: {image_path}")
-                return PILImage.fromarray(arr.astype(np.uint8))
+                if not row_cropped:
+                    logger_instance.info(f"No cropping occurred for {image_path}. Returning original.")
+                    return img
+                else:
+                    return PILImage.fromarray(arr.astype(np.uint8))
             cols_to_keep = get_valid_indices_with_padding(valid_col_indices, new_width - 1, pad=5)
+            if len(cols_to_keep) == new_width and not row_cropped:
+                logger_instance.info(f"No cropping occurred for {image_path}. Returning original.")
+                return img
             arr_cleaned = arr_T[cols_to_keep, :, :].transpose(1, 0, 2)
             logger_instance.info(f"Kept {len(cols_to_keep)} of {new_width} columns (with padding) for {image_path}")
 
@@ -390,7 +386,6 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                 pixels[mask] = [255, 255, 255]
                 img = PILImage.fromarray(pixels)
 
-            # Removed size cap to allow high-resolution images
             img.save(image_path, 'PNG')
             return True
         except Exception as e:
@@ -557,7 +552,6 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
     except Exception as e:
         logger_instance.error(f"Error writing to DISTRO Excel file: {e}", exc_info=True)
         raise
-
 def write_excel_generic(local_filename: str, temp_dir: str, header_row: int, row_offset: int, logger_instance: logging.Logger):
     try:
         wb = load_workbook(local_filename); ws = wb.active
