@@ -316,7 +316,7 @@ import logging
 def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, logger_instance: logging.Logger):
     """
     Write image and metadata to the Excel file for DISTRO type, with image processing to remove uniform lines
-    and sizing to fill cell either horizontally or vertically, matching unedited image display size.
+    and sizing to maximize image size within a smaller cell, matching unedited image display.
     
     Args:
         local_filename (str): Path to the Excel file.
@@ -367,7 +367,7 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
             return None
 
     def verify_and_process_image(image_path: str, logger_instance: logging.Logger) -> bool:
-        """Verify and resize image, ensuring it meets size and format requirements."""
+        """Verify and process image, ensuring it meets size and format requirements."""
         try:
             with PILImage.open(image_path) as img:
                 img.verify()
@@ -391,9 +391,7 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                 pixels[mask] = [255, 255, 255]
                 img = PILImage.fromarray(pixels)
 
-            h, w = img.size
-            if h > 300 or w > 300:  # Increased from 130 to allow larger unedited images
-                img.thumbnail((300, 300))
+            # Removed 130px cap to allow larger images
             img.save(image_path, 'PNG')
             return True
         except Exception as e:
@@ -438,10 +436,10 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                 ws.append([''] * ws.max_column)
                 ws.row_dimensions[row_num].height = DEFAULT_ROW_HEIGHT_POINTS
 
-        CELL_WIDTH_POINTS = 40  # Increased to ~288px for larger images
+        CELL_WIDTH_POINTS = 20  # Reduced for smaller cell width (~144px)
         CELL_HEIGHT_POINTS = max(DEFAULT_ROW_HEIGHT_POINTS, 150)
-        PADDING_POINTS = 5
-        CELL_WIDTH_PIXELS = points_to_pixels(CELL_WIDTH_POINTS)  # ~288px
+        PADDING_POINTS = 2  # Reduced to minimize space loss
+        CELL_WIDTH_PIXELS = points_to_pixels(CELL_WIDTH_POINTS)  # ~144px
         CELL_HEIGHT_PIXELS = points_to_pixels(CELL_HEIGHT_POINTS)  # ~1080px
         temp_files = []  # Track temporary processed images for cleanup
 
