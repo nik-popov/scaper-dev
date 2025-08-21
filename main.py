@@ -300,7 +300,6 @@ def verify_and_process_image(image_path: str, logger_instance: logging.Logger) -
 from openpyxl.drawing.spreadsheet_drawing import TwoCellAnchor, AnchorMarker
 from openpyxl.drawing.xdr import XDRPositiveSize2D
 from openpyxl.utils.units import pixels_to_EMU, points_to_pixels
-
 from PIL import Image as PILImage
 import numpy as np
 from openpyxl import load_workbook
@@ -316,7 +315,7 @@ import logging
 def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, logger_instance: logging.Logger):
     """
     Write image and metadata to the Excel file for DISTRO type, with image processing to remove uniform lines
-    and sizing to exactly fill template cell size (width or height) based on aspect ratio, with no padding.
+    and sizing to fill template cell size (width or height) based on aspect ratio, scaled 4–5x larger, with no padding.
     
     Args:
         local_filename (str): Path to the Excel file.
@@ -391,7 +390,7 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                 pixels[mask] = [255, 255, 255]
                 img = PILImage.fromarray(pixels)
 
-            # Removed size cap to allow larger images
+            # Removed size cap to allow high-resolution images
             img.save(image_path, 'PNG')
             return True
         except Exception as e:
@@ -438,9 +437,10 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
 
         CELL_WIDTH_POINTS = 30  # ~216px, template cell width
         CELL_HEIGHT_POINTS = max(DEFAULT_ROW_HEIGHT_POINTS, 150)  # ~1080px, template cell height
-        PADDING_POINTS = 0  # No padding to match template cell size
+        PADDING_POINTS = 0  # No padding to maximize image size
         CELL_WIDTH_PIXELS = points_to_pixels(CELL_WIDTH_POINTS)  # ~216px
         CELL_HEIGHT_PIXELS = points_to_pixels(CELL_HEIGHT_POINTS)  # ~1080px
+        SCALE_FACTOR = 4.5  # Target 4–5x larger size (midpoint)
         temp_files = []  # Track temporary processed images for cleanup
 
         for row_id in range(min_row_id, max_row_id + 1):
@@ -454,10 +454,12 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                     if verify_and_process_image(image_path, logger_instance):
                         processed_img = process_image_remove_lines(image_path, logger_instance)
                         if processed_img:
-                            # Resize to exactly fill template cell width or height based on aspect ratio
+                            # Resize to target 4–5x larger, capped at template cell size
                             w, h = processed_img.size
-                            width_ratio = CELL_WIDTH_PIXELS / w
-                            height_ratio = CELL_HEIGHT_PIXELS / h
+                            target_width = min(w * SCALE_FACTOR, CELL_WIDTH_PIXELS)
+                            target_height = min(h * SCALE_FACTOR, CELL_HEIGHT_PIXELS)
+                            width_ratio = target_width / w
+                            height_ratio = target_height / h
                             scale = min(width_ratio, height_ratio)  # Fit within cell
                             new_width = int(w * scale)
                             new_height = int(h * scale)
@@ -554,6 +556,7 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
     except Exception as e:
         logger_instance.error(f"Error writing to DISTRO Excel file: {e}", exc_info=True)
         raise
+
 def write_excel_generic(local_filename: str, temp_dir: str, header_row: int, row_offset: int, logger_instance: logging.Logger):
     try:
         wb = load_workbook(local_filename); ws = wb.active
