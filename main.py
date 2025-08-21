@@ -303,9 +303,9 @@ from openpyxl.utils.units import pixels_to_EMU, points_to_pixels
 
 def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, logger_instance: logging.Logger):
     """
-    Write image and metadata to the Excel file for DISTRO type, with image processing to remove uniform lines
-    and sizing to exactly fill template cell width (horizontal images) or height (vertical images) based on aspect ratio.
-    
+    Write image and metadata to the Excel file for DISTRO type, ensuring proper scaling of cropped images
+    to fit template cell width (horizontal images) or height (vertical images) and preventing corruption.
+
     Args:
         local_filename (str): Path to the Excel file.
         temp_dir (str): Directory containing images.
@@ -323,38 +323,42 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
         return sorted(padded)
 
     def process_image_remove_lines(image_path: str, logger_instance: logging.Logger) -> Optional[PILImage.Image]:
-        """Process image to remove uniform horizontal and vertical lines with padding. Use original if no cropping occurred."""
+        """Process image to remove uniform horizontal and vertical lines with padding, returning original if no cropping needed."""
         try:
-            img = PILImage.open(image_path).convert('RGB')
+            with PILImage.open(image_path) as img:
+                img.verify()  # Verify image integrity before processing
+            img = PILImage.open(image_path).convert('RGB')  # Convert to RGB to avoid RGBA issues
             arr = np.array(img)  # Shape: (height, width, 3)
             height, width, _ = arr.shape
 
             # Step 1: Detect non-uniform horizontal lines
             valid_row_indices = [y for y in range(height) if not np.all(arr[y] == arr[y][0])]
-            if not valid_row_indices:
+            row_cropped = False
+            if valid_row_indices:
+                rows_to_keep = get_valid_indices_with_padding(valid_row_indices, height - 1, pad=5)
+                row_cropped = len(rows_to_keep) != height
+                arr = arr[rows_to_keep, :, :]
+                logger_instance.info(f"Kept {len(rows_to_keep)} of {height} rows (with padding) for {image_path}")
+            else:
                 logger_instance.warning(f"No non-uniform rows found in image: {image_path}")
-                return img
-            rows_to_keep = get_valid_indices_with_padding(valid_row_indices, height - 1, pad=5)
-            row_cropped = len(rows_to_keep) != height
-            arr = arr[rows_to_keep, :, :]
-            logger_instance.info(f"Kept {len(rows_to_keep)} of {height} rows (with padding) for {image_path}")
 
             # Step 2: Detect non-uniform vertical lines
             arr_T = arr.transpose(1, 0, 2)
             new_width = arr_T.shape[0]
             valid_col_indices = [x for x in range(new_width) if not np.all(arr_T[x] == arr_T[x][0])]
-            if not valid_col_indices:
-                if not row_cropped:
-                    logger_instance.info(f"No cropping occurred for {image_path}. Returning original.")
-                    return img
-                else:
-                    return PILImage.fromarray(arr.astype(np.uint8))
-            cols_to_keep = get_valid_indices_with_padding(valid_col_indices, new_width - 1, pad=5)
-            if len(cols_to_keep) == new_width and not row_cropped:
+            col_cropped = False
+            if valid_col_indices:
+                cols_to_keep = get_valid_indices_with_padding(valid_col_indices, new_width - 1, pad=5)
+                col_cropped = len(cols_to_keep) != new_width
+                arr_cleaned = arr_T[cols_to_keep, :, :].transpose(1, 0, 2)
+                logger_instance.info(f"Kept {len(cols_to_keep)} of {new_width} columns (with padding) for {image_path}")
+            else:
+                arr_cleaned = arr
+                logger_instance.info(f"No non-uniform columns found in image: {image_path}")
+
+            if not row_cropped and not col_cropped:
                 logger_instance.info(f"No cropping occurred for {image_path}. Returning original.")
-                return img
-            arr_cleaned = arr_T[cols_to_keep, :, :].transpose(1, 0, 2)
-            logger_instance.info(f"Kept {len(cols_to_keep)} of {new_width} columns (with padding) for {image_path}")
+                return img  # Return original if no cropping was needed
 
             return PILImage.fromarray(arr_cleaned.astype(np.uint8))
         except Exception as e:
@@ -365,49 +369,46 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
         """Verify and process image, ensuring it meets size and format requirements."""
         try:
             with PILImage.open(image_path) as img:
-                img.verify()
+                img.verify()  # Verify image integrity
             if os.path.getsize(image_path) < 1000:
                 logger_instance.warning(f"File too small: {image_path}")
                 return False
+
             img = PILImage.open(image_path)
             if img.mode == 'RGBA':
+                # Convert RGBA to RGB with white background to preserve visibility
                 background = PILImage.new('RGB', img.size, (255, 255, 255))
                 background.paste(img, mask=img.split()[3])
                 img = background
             elif img.mode != 'RGB':
                 img = img.convert('RGB')
-            
+
+            # Remove near-uniform borders (e.g., white or near-white)
             pixels = np.array(img)
             border_pixels = np.concatenate([pixels[0, :], pixels[-1, :], pixels[:, 0], pixels[:, -1]])
             colors, counts = np.unique(border_pixels, axis=0, return_counts=True)
             most_common = colors[counts.argmax()]
-            if np.sum(most_common) < 700:
+            if np.sum(most_common) > 700:  # Check if border is light (close to white)
                 mask = np.all(np.abs(pixels - most_common) <= 15, axis=2)
-                pixels[mask] = [255, 255, 255]
+                pixels[mask] = [255, 255, 255]  # Set to pure white
                 img = PILImage.fromarray(pixels)
 
-            img.save(image_path, 'PNG')
+            img.save(image_path, 'PNG', quality=95)  # Save with high quality to prevent corruption
+            logger_instance.info(f"Image verified and processed: {image_path}")
             return True
         except Exception as e:
             logger_instance.error(f"Image verification failed for {image_path}: {e}", exc_info=True)
             return False
 
-    def get_last_non_empty_row(ws, column: str, header_row: int, logger_instance: logging.Logger) -> int:
-        """Find the last non-empty row in the specified column, starting after header_row."""
-        last_row = header_row
-        for row in ws[f"{column}{header_row + 1}:{column}{ws.max_row}"]:
-            if row[0].value is not None and str(row[0].value).strip():
-                last_row = max(last_row, row[0].row)
-        logger_instance.info(f"Last non-empty row in column {column}: {last_row}")
-        return last_row
-
     try:
-        header_row = int(header_row)
+        header_row = int(header_row)  # Ensure header_row is an integer
         wb = load_workbook(local_filename)
         ws = wb.active
         image_map = {int(Path(f).stem): f for f in os.listdir(temp_dir) if Path(f).stem.isdigit()}
 
-        DEFAULT_ROW_HEIGHT_POINTS = ws.row_dimensions.get(header_row + 1, {}).height or 12.75
+        # Get template row height
+        row_dim = ws.row_dimensions.get(header_row + 1)
+        DEFAULT_ROW_HEIGHT_POINTS = row_dim.height if row_dim and row_dim.height is not None else 150
         logger_instance.info(f"Using template row height: {DEFAULT_ROW_HEIGHT_POINTS} points from row {header_row + 1}")
 
         row_data_map = {item['ExcelRowID']: item for item in image_data}
@@ -432,7 +433,6 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
 
         CELL_WIDTH_POINTS = 30  # ~216px, template cell width
         CELL_HEIGHT_POINTS = max(DEFAULT_ROW_HEIGHT_POINTS, 150)  # ~1080px, template cell height
-        PADDING_POINTS = 0  # No padding to maximize image size
         CELL_WIDTH_PIXELS = points_to_pixels(CELL_WIDTH_POINTS)  # ~216px
         CELL_HEIGHT_PIXELS = points_to_pixels(CELL_HEIGHT_POINTS)  # ~1080px
         temp_files = []  # Track temporary processed images for cleanup
@@ -448,44 +448,41 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                     if verify_and_process_image(image_path, logger_instance):
                         processed_img = process_image_remove_lines(image_path, logger_instance)
                         if processed_img:
-                            # Resize to exactly fill template cell width (horizontal) or height (vertical)
+                            # Resize to exactly fit template cell width (horizontal) or height (vertical)
                             w, h = processed_img.size
                             aspect_ratio = w / h
-                            if aspect_ratio > 1:  # Horizontal image (wider than tall)
+                            if aspect_ratio > 1:  # Horizontal image
                                 scale = CELL_WIDTH_PIXELS / w
                                 orientation = "horizontal"
-                            else:  # Vertical image (taller than wide or square)
+                            else:  # Vertical image
                                 scale = CELL_HEIGHT_PIXELS / h
                                 orientation = "vertical"
                             new_width = int(w * scale)
                             new_height = int(h * scale)
-                            if scale != 1.0:  # Only resize if needed
+                            if scale != 1.0:
                                 processed_img = processed_img.resize((new_width, new_height), PILImage.Resampling.LANCZOS)
                                 logger_instance.info(f"Resized {orientation} image for Row {row_id} to width={new_width}px, height={new_height}px")
 
+                            # Save processed image to temporary file
                             temp_processed_path = os.path.join(temp_dir, f"processed_{row_id}.png")
-                            processed_img.save(temp_processed_path, 'PNG')
-                            temp_files.append(temp_processed_path)  # Track for later cleanup
+                            processed_img.save(temp_processed_path, 'PNG', quality=95)  # High quality to prevent corruption
+                            temp_files.append(temp_processed_path)
 
                             img = Image(temp_processed_path)
-                            img_height_pixels = img.height if hasattr(img, 'height') else 0
-                            img_width_pixels = img.width if hasattr(img, 'width') else 0
+                            img_width_pixels = new_width
+                            img_height_pixels = new_height
+                            img_width_points = img_width_pixels * 72 / 96
                             img_height_points = img_height_pixels * 72 / 96
-                            img_width_points = img_width_pixels * 72 / 96  # 1pt = 0.75px at 96 DPI
 
                             # Set column width and row height to template cell size
                             ws.column_dimensions['A'].width = CELL_WIDTH_POINTS
-                            ws.row_dimensions[row_num].height = CELL_HEIGHT_POINTS
+                            ws.row_dimensions[row_num].height = max(CELL_HEIGHT_POINTS, img_height_points)
 
-                            cell_width_pixels = points_to_pixels(ws.column_dimensions['A'].width)
-                            cell_height_pixels = points_to_pixels(ws.row_dimensions[row_num].height)
-
-                            x_offset_pixels = (cell_width_pixels - img_width_pixels) / 2
-                            y_offset_pixels = (cell_height_pixels - img_height_pixels) / 2
-
+                            # Center the image in the cell
+                            x_offset_pixels = (CELL_WIDTH_PIXELS - img_width_pixels) / 2
+                            y_offset_pixels = (CELL_HEIGHT_PIXELS - img_height_pixels) / 2
                             x_offset_pixels = max(0, x_offset_pixels)
                             y_offset_pixels = max(0, y_offset_pixels)
-
                             x_offset_emu = pixels_to_EMU(x_offset_pixels)
                             y_offset_emu = pixels_to_EMU(y_offset_pixels)
 
@@ -501,11 +498,7 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                                 f"Added centered {orientation} image for Row {row_id} at Excel row {row_num}, "
                                 f"height={ws.row_dimensions[row_num].height:.2f} points, width={ws.column_dimensions['A'].width:.2f} points, "
                                 f"x_offset={x_offset_pixels:.2f}px, y_offset={y_offset_pixels:.2f}px, "
-                                f"img_width={img_width_pixels}px, cell_width={cell_width_pixels:.2f}px, "
-                                f"left_margin={(cell_width_pixels - img_width_pixels) / 2:.2f}px, "
-                                f"right_margin={(cell_width_pixels - img_width_pixels) / 2:.2f}px, "
-                                f"top_margin={(cell_height_pixels - img_height_pixels) / 2:.2f}px, "
-                                f"bottom_margin={(cell_height_pixels - img_height_pixels) / 2:.2f}px"
+                                f"img_width={img_width_pixels}px, cell_width={CELL_WIDTH_PIXELS:.2f}px"
                             )
                         else:
                             logger_instance.warning(f"Image processing failed for Row {row_id}, writing metadata only")
@@ -541,7 +534,7 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
         wb.save(local_filename)
         logger_instance.info(f"Excel file saved: {local_filename}")
 
-        # Clean up temporary processed images after saving
+        # Clean up temporary processed images
         for temp_file in temp_files:
             try:
                 os.remove(temp_file)
