@@ -301,259 +301,117 @@ from openpyxl.drawing.spreadsheet_drawing import TwoCellAnchor, AnchorMarker
 from openpyxl.drawing.xdr import XDRPositiveSize2D
 from openpyxl.utils.units import pixels_to_EMU, points_to_pixels
 
-from PIL import Image as PILImage
-import numpy as np
-from openpyxl import load_workbook
-from openpyxl.drawing.image import Image
-from openpyxl.drawing.spreadsheet_drawing import TwoCellAnchor, AnchorMarker
-from openpyxl.drawing.xdr import XDRPositiveSize2D
-from openpyxl.utils.units import pixels_to_EMU, points_to_pixels
-from pathlib import Path
-import os
-from typing import List, Dict, Optional
-import logging
-
 def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, logger_instance: logging.Logger):
-    """
-    Write image and metadata to the Excel file for DISTRO type, with image processing to remove uniform lines
-    and sizing to exactly fill template cell size (width or height) based on aspect ratio, with no padding.
-    
-    Args:
-        local_filename (str): Path to the Excel file.
-        temp_dir (str): Directory containing images.
-        image_data (List[Dict]): List of dictionaries with image and metadata.
-        header_row (int): Row index of the header in the Excel file.
-        logger_instance (logging.Logger): Logger for tracking operations.
-    """
-    def get_valid_indices_with_padding(valid_indices, max_index, pad=5):
-        """Identify indices with padding for non-uniform rows/columns."""
-        padded = set()
-        for idx in valid_indices:
-            start = max(0, idx - pad)
-            end = min(max_index, idx + pad + 1)
-            padded.update(range(start, end))
-        return sorted(padded)
+    header_row = int(header_row)
+    wb = load_workbook(local_filename)
+    ws = wb.active
+    image_map = {int(Path(f).stem): f for f in os.listdir(temp_dir) if Path(f).stem.isdigit()}
 
-    def process_image_remove_lines(image_path: str, logger_instance: logging.Logger) -> Optional[PILImage.Image]:
-        """Process image to remove uniform horizontal and vertical lines with padding."""
-        try:
-            img = PILImage.open(image_path).convert('RGB')
-            arr = np.array(img)  # Shape: (height, width, 3)
-            height, width, _ = arr.shape
+    DEFAULT_ROW_HEIGHT_POINTS = ws.row_dimensions.get(header_row + 1, {}).height or 12.75
+    logger_instance.info(f"Using template row height: {DEFAULT_ROW_HEIGHT_POINTS} points from row {header_row + 1}")
 
-            # Step 1: Detect non-uniform horizontal lines
-            valid_row_indices = [y for y in range(height) if not np.all(arr[y] == arr[y][0])]
-            if not valid_row_indices:
-                logger_instance.warning(f"No non-uniform rows found in image: {image_path}")
-                return img
-            rows_to_keep = get_valid_indices_with_padding(valid_row_indices, height - 1, pad=5)
-            arr = arr[rows_to_keep, :, :]
-            logger_instance.info(f"Kept {len(rows_to_keep)} of {height} rows (with padding) for {image_path}")
+    row_data_map = {item['ExcelRowID']: item for item in image_data}
+    last_non_empty_row = get_last_non_empty_row(ws, column='B', header_row=header_row, logger_instance=logger_instance)
 
-            # Step 2: Detect non-uniform vertical lines
-            arr_T = arr.transpose(1, 0, 2)
-            new_width = arr_T.shape[0]
-            valid_col_indices = [x for x in range(new_width) if not np.all(arr_T[x] == arr_T[x][0])]
-            if not valid_col_indices:
-                logger_instance.warning(f"No non-uniform columns found in image: {image_path}")
-                return PILImage.fromarray(arr.astype(np.uint8))
-            cols_to_keep = get_valid_indices_with_padding(valid_col_indices, new_width - 1, pad=5)
-            arr_cleaned = arr_T[cols_to_keep, :, :].transpose(1, 0, 2)
-            logger_instance.info(f"Kept {len(cols_to_keep)} of {new_width} columns (with padding) for {image_path}")
+    if image_data:
+        min_row_id = min(item['ExcelRowID'] for item in image_data)
+        max_row_id = max(item['ExcelRowID'] for item in image_data)
+        max_row_id = max(max_row_id, last_non_empty_row - header_row)
+        logger_instance.info(f"Row range: ExcelRowID {min_row_id} to {max_row_id}, adjusted for template last row {last_non_empty_row}")
+    else:
+        min_row_id = 1
+        max_row_id = last_non_empty_row - header_row if last_non_empty_row > header_row else 1
+        logger_instance.warning(f"No data in image_data, setting range based on template last row {last_non_empty_row}")
 
-            return PILImage.fromarray(arr_cleaned.astype(np.uint8))
-        except Exception as e:
-            logger_instance.error(f"Error processing image {image_path} to remove lines: {e}", exc_info=True)
-            return None
+    max_needed_row = max_row_id + header_row
+    if ws.max_row < max_needed_row:
+        logger_instance.info(f"Appending {max_needed_row - ws.max_row} rows to worksheet")
+        for row_num in range(ws.max_row + 1, max_needed_row + 1):
+            ws.append([''] * ws.max_column)
+            ws.row_dimensions[row_num].height = DEFAULT_ROW_HEIGHT_POINTS
 
-    def verify_and_process_image(image_path: str, logger_instance: logging.Logger) -> bool:
-        """Verify and process image, ensuring it meets size and format requirements."""
-        try:
-            with PILImage.open(image_path) as img:
-                img.verify()
-            if os.path.getsize(image_path) < 1000:
-                logger_instance.warning(f"File too small: {image_path}")
-                return False
-            img = PILImage.open(image_path)
-            if img.mode == 'RGBA':
-                background = PILImage.new('RGB', img.size, (255, 255, 255))
-                background.paste(img, mask=img.split()[3])
-                img = background
-            elif img.mode != 'RGB':
-                img = img.convert('RGB')
-            
-            pixels = np.array(img)
-            border_pixels = np.concatenate([pixels[0, :], pixels[-1, :], pixels[:, 0], pixels[:, -1]])
-            colors, counts = np.unique(border_pixels, axis=0, return_counts=True)
-            most_common = colors[counts.argmax()]
-            if np.sum(most_common) < 700:
-                mask = np.all(np.abs(pixels - most_common) <= 15, axis=2)
-                pixels[mask] = [255, 255, 255]
-                img = PILImage.fromarray(pixels)
+    # Default cell dimensions for centering (in points)
+    CELL_WIDTH_POINTS = 100  # Width for column A to ensure sufficient margins
+    CELL_HEIGHT_POINTS = max(DEFAULT_ROW_HEIGHT_POINTS, 150)  # Ensure cell is tall enough for centering
+    PADDING_POINTS = 5  # Padding for even margins on both sides
 
-            # Removed size cap to allow larger images
-            img.save(image_path, 'PNG')
-            return True
-        except Exception as e:
-            logger_instance.error(f"Image verification failed for {image_path}: {e}", exc_info=True)
-            return False
+    for row_id in range(min_row_id, max_row_id + 1):
+        row_num = row_id + header_row  # This ensures we start writing after the header row
+        ws.row_dimensions[row_num].height = CELL_HEIGHT_POINTS
 
-    def get_last_non_empty_row(ws, column: str, header_row: int, logger_instance: logging.Logger) -> int:
-        """Find the last non-empty row in the specified column, starting after header_row."""
-        last_row = header_row
-        for row in ws[f"{column}{header_row + 1}:{column}{ws.max_row}"]:
-            if row[0].value is not None and str(row[0].value).strip():
-                last_row = max(last_row, row[0].row)
-        logger_instance.info(f"Last non-empty row in column {column}: {last_row}")
-        return last_row
+        if row_id in row_data_map:
+            item = row_data_map[row_id]
+            if row_id in image_map:
+                image_path = os.path.join(temp_dir, image_map[row_id])
+                if verify_and_process_image(image_path, logger_instance):
+                    img = Image(image_path)
+                    img_height_pixels = img.height if hasattr(img, 'height') else 0
+                    img_width_pixels = img.width if hasattr(img, 'width') else 0
+                    img_height_points = img_height_pixels * 72 / 96
+                    img_width_points = img_width_pixels * 0.132  # Approximate pixels to Excel column width
 
-    try:
-        header_row = int(header_row)
-        wb = load_workbook(local_filename)
-        ws = wb.active
-        image_map = {int(Path(f).stem): f for f in os.listdir(temp_dir) if Path(f).stem.isdigit()}
+                    # Set column A width to image width plus padding, but cap at CELL_WIDTH_POINTS
+                    required_width = img_width_points + PADDING_POINTS * 2  # Add padding on both sides
+                    ws.column_dimensions['A'].width = min(CELL_WIDTH_POINTS, max(ws.column_dimensions['A'].width or 0, required_width))
 
-        DEFAULT_ROW_HEIGHT_POINTS = ws.row_dimensions.get(header_row + 1, {}).height or 12.75
-        logger_instance.info(f"Using template row height: {DEFAULT_ROW_HEIGHT_POINTS} points from row {header_row + 1}")
+                    # Calculate cell dimensions in pixels
+                    cell_width_pixels = points_to_pixels(ws.column_dimensions['A'].width)
+                    cell_height_pixels = points_to_pixels(CELL_HEIGHT_POINTS)
 
-        row_data_map = {item['ExcelRowID']: item for item in image_data}
-        last_non_empty_row = get_last_non_empty_row(ws, column='B', header_row=header_row, logger_instance=logger_instance)
+                    # Calculate offsets to center the image
+                    x_offset_pixels = (cell_width_pixels - img_width_pixels) / 2
+                    y_offset_pixels = (cell_height_pixels - img_height_pixels) / 2
 
-        if image_data:
-            min_row_id = min(item['ExcelRowID'] for item in image_data)
-            max_row_id = max(item['ExcelRowID'] for item in image_data)
-            max_row_id = max(max_row_id, last_non_empty_row - header_row)
-            logger_instance.info(f"Row range: ExcelRowID {min_row_id} to {max_row_id}, adjusted for template last row {last_non_empty_row}")
-        else:
-            min_row_id = 1
-            max_row_id = last_non_empty_row - header_row if last_non_empty_row > header_row else 1
-            logger_instance.warning(f"No data in image_data, setting range based on template last row {last_non_empty_row}")
+                    # Ensure offsets are non-negative and add correction for horizontal centering
+                    x_offset_pixels = max(0, x_offset_pixels + 10)  # Add 10 pixels to ensure left margin
+                    y_offset_pixels = max(0, y_offset_pixels)
 
-        max_needed_row = max_row_id + header_row
-        if ws.max_row < max_needed_row:
-            logger_instance.info(f"Appending {max_needed_row - ws.max_row} rows to worksheet")
-            for row_num in range(ws.max_row + 1, max_needed_row + 1):
-                ws.append([''] * ws.max_column)
-                ws.row_dimensions[row_num].height = DEFAULT_ROW_HEIGHT_POINTS
+                    # Convert offsets to EMU (Excel's internal unit)
+                    x_offset_emu = pixels_to_EMU(x_offset_pixels)
+                    y_offset_emu = pixels_to_EMU(y_offset_pixels)
 
-        CELL_WIDTH_POINTS = 75  # ~216px, template cell width
-        CELL_HEIGHT_POINTS = max(DEFAULT_ROW_HEIGHT_POINTS, 150)  # ~1080px, template cell height
-        PADDING_POINTS = 0  # No padding to match template cell size
-        CELL_WIDTH_PIXELS = points_to_pixels(CELL_WIDTH_POINTS)  # ~216px
-        CELL_HEIGHT_PIXELS = points_to_pixels(CELL_HEIGHT_POINTS)  # ~1080px
-        temp_files = []  # Track temporary processed images for cleanup
-
-        for row_id in range(min_row_id, max_row_id + 1):
-            row_num = row_id + header_row
-            ws.row_dimensions[row_num].height = CELL_HEIGHT_POINTS  # Match template cell height
-
-            if row_id in row_data_map:
-                item = row_data_map[row_id]
-                if row_id in image_map:
-                    image_path = os.path.join(temp_dir, image_map[row_id])
-                    if verify_and_process_image(image_path, logger_instance):
-                        processed_img = process_image_remove_lines(image_path, logger_instance)
-                        if processed_img:
-                            # Resize to exactly fill template cell width or height based on aspect ratio
-                            w, h = processed_img.size
-                            width_ratio = CELL_WIDTH_PIXELS / w
-                            height_ratio = CELL_HEIGHT_PIXELS / h
-                            scale = min(width_ratio, height_ratio)  # Fit within cell
-                            new_width = int(w * scale)
-                            new_height = int(h * scale)
-                            if scale != 1.0:  # Only resize if needed
-                                processed_img = processed_img.resize((new_width, new_height), PILImage.Resampling.LANCZOS)
-                                logger_instance.info(f"Resized image for Row {row_id} to width={new_width}px, height={new_height}px")
-
-                            temp_processed_path = os.path.join(temp_dir, f"processed_{row_id}.png")
-                            processed_img.save(temp_processed_path, 'PNG')
-                            temp_files.append(temp_processed_path)  # Track for later cleanup
-
-                            img = Image(temp_processed_path)
-                            img_height_pixels = img.height if hasattr(img, 'height') else 0
-                            img_width_pixels = img.width if hasattr(img, 'width') else 0
-                            img_height_points = img_height_pixels * 72 / 96
-                            img_width_points = img_width_pixels * 72 / 96  # 1pt = 0.75px at 96 DPI
-
-                            # Set column width and row height to template cell size
-                            ws.column_dimensions['A'].width = CELL_WIDTH_POINTS
-                            ws.row_dimensions[row_num].height = CELL_HEIGHT_POINTS
-
-                            cell_width_pixels = points_to_pixels(ws.column_dimensions['A'].width)
-                            cell_height_pixels = points_to_pixels(ws.row_dimensions[row_num].height)
-
-                            x_offset_pixels = (cell_width_pixels - img_width_pixels) / 2
-                            y_offset_pixels = (cell_height_pixels - img_height_pixels) / 2
-
-                            x_offset_pixels = max(0, x_offset_pixels)
-                            y_offset_pixels = max(0, y_offset_pixels)
-
-                            x_offset_emu = pixels_to_EMU(x_offset_pixels)
-                            y_offset_emu = pixels_to_EMU(y_offset_pixels)
-
-                            anchor = TwoCellAnchor(
-                                editAs='absolute',
-                                _from=AnchorMarker(col=0, colOff=x_offset_emu, row=row_num - 1, rowOff=y_offset_emu),
-                                to=AnchorMarker(col=0, colOff=x_offset_emu + pixels_to_EMU(img_width_pixels), row=row_num - 1, rowOff=y_offset_emu + pixels_to_EMU(img_height_pixels))
-                            )
-                            anchor.ext = XDRPositiveSize2D(pixels_to_EMU(img_width_pixels), pixels_to_EMU(img_height_pixels))
-                            img.anchor = anchor
-                            ws.add_image(img)
-                            logger_instance.info(
-                                f"Added centered image for Row {row_id} at Excel row {row_num}, "
-                                f"height={ws.row_dimensions[row_num].height:.2f} points, width={ws.column_dimensions['A'].width:.2f} points, "
-                                f"x_offset={x_offset_pixels:.2f}px, y_offset={y_offset_pixels:.2f}px, "
-                                f"img_width={img_width_pixels}px, cell_width={cell_width_pixels:.2f}px, "
-                                f"left_margin={(cell_width_pixels - img_width_pixels) / 2:.2f}px, "
-                                f"right_margin={(cell_width_pixels - img_width_pixels) / 2:.2f}px, "
-                                f"top_margin={(cell_height_pixels - img_height_pixels) / 2:.2f}px, "
-                                f"bottom_margin={(cell_height_pixels - img_height_pixels) / 2:.2f}px"
-                            )
-                        else:
-                            logger_instance.warning(f"Image processing failed for Row {row_id}, writing metadata only")
-                    else:
-                        logger_instance.warning(f"Image verification failed for Row {row_id}, writing metadata only")
+                    # Create a TwoCellAnchor to position the image
+                    anchor = TwoCellAnchor(
+                        editAs='absolute',
+                        _from=AnchorMarker(col=0, colOff=x_offset_emu, row=row_num - 1, rowOff=y_offset_emu),
+                        to=AnchorMarker(col=0, colOff=x_offset_emu + pixels_to_EMU(img_width_pixels), row=row_num - 1, rowOff=y_offset_emu + pixels_to_EMU(img_height_pixels))
+                    )
+                    anchor.ext = XDRPositiveSize2D(pixels_to_EMU(img_width_pixels), pixels_to_EMU(img_height_pixels))
+                    img.anchor = anchor
+                    ws.add_image(img)
+                    logger_instance.info(f"Added centered image for Row {row_id} at Excel row {row_num}, height={CELL_HEIGHT_POINTS} points, width={ws.column_dimensions['A'].width:.2f} points, x_offset={x_offset_pixels:.2f}px, y_offset={y_offset_pixels:.2f}px, img_width={img_width_pixels}px, cell_width={cell_width_pixels:.2f}px, left_margin={(cell_width_pixels - img_width_pixels) / 2 + 10:.2f}px, right_margin={(cell_width_pixels - img_width_pixels) / 2:.2f}px")
                 else:
-                    logger_instance.info(f"No image found for Row {row_id}, writing metadata only")
-
-                if row_num > header_row:
-                    ws[f"B{row_num}"] = item.get('Brand', '')
-                    ws[f"D{row_num}"] = item.get('Style', '')
-                    ws[f"E{row_num}"] = item.get('Color', '')
-                    ws[f"H{row_num}"] = item.get('Category', '')
-                    logger_instance.info(f"Wrote metadata for Row {row_id} at Excel row {row_num}")
-                else:
-                    logger_instance.warning(f"Skipping metadata write for row {row_num} as it is the header row")
+                    logger_instance.warning(f"Image processing failed for Row {row_id}, writing metadata only")
             else:
-                if row_num > header_row:
-                    ws[f"B{row_num}"] = ''
-                    ws[f"D{row_num}"] = ''
-                    ws[f"E{row_num}"] = ''
-                    ws[f"H{row_num}"] = ''
-                    logger_instance.info(f"Filled missing row {row_num} (ExcelRowID {row_id}) with empty metadata")
-                else:
-                    logger_instance.info(f"Skipping row {row_num} (ExcelRowID {row_id}) as it is the header row")
+                logger_instance.info(f"No image found for Row {row_id}, writing metadata only")
 
-        if ws.max_row > max_row_id + header_row:
-            logger_instance.info(f"Deleting {ws.max_row - (max_row_id + header_row)} rows after row {max_row_id + header_row}")
-            ws.delete_rows(max_row_id + header_row + 1, ws.max_row - (max_row_id + header_row))
+            # Write metadata only to rows after header_row
+            if row_num > header_row:
+                ws[f"B{row_num}"] = item.get('Brand', '')
+                ws[f"D{row_num}"] = item.get('Style', '')
+                ws[f"E{row_num}"] = item.get('Color', '')
+                ws[f"H{row_num}"] = item.get('Category', '')
+                logger_instance.info(f"Wrote metadata for Row {row_id} at Excel row {row_num}")
+            else:
+                logger_instance.warning(f"Skipping metadata write for row {row_num} as it is the header row")
+        else:
+            # Only clear cells after header_row
+            if row_num > header_row:
+                ws[f"B{row_num}"] = ''
+                ws[f"D{row_num}"] = ''
+                ws[f"E{row_num}"] = ''
+                ws[f"H{row_num}"] = ''
+                logger_instance.info(f"Filled missing row {row_num} (ExcelRowID {row_id}) with empty metadata")
+            else:
+                logger_instance.info(f"Skipping row {row_num} (ExcelRowID {row_id}) as it is the header row")
 
-        logger_instance.info("Setting worksheet view to A1.")
-        ws.sheet_view.topLeftCell = 'A1'
-        wb.save(local_filename)
-        logger_instance.info(f"Excel file saved: {local_filename}")
+    if ws.max_row > max_row_id + header_row:
+        logger_instance.info(f"Deleting {ws.max_row - (max_row_id + header_row)} rows after row {max_row_id + header_row}")
+        ws.delete_rows(max_row_id + header_row + 1, ws.max_row - (max_row_id + header_row))
 
-        # Clean up temporary processed images after saving
-        for temp_file in temp_files:
-            try:
-                os.remove(temp_file)
-                logger_instance.info(f"Deleted temporary image: {temp_file}")
-            except Exception as e:
-                logger_instance.warning(f"Failed to delete temporary image {temp_file}: {e}")
-
-    except Exception as e:
-        logger_instance.error(f"Error writing to DISTRO Excel file: {e}", exc_info=True)
-        raise
+    logger_instance.info("Setting worksheet view to A1.")
+    wb.save(local_filename)
+    logger_instance.info(f"Excel file saved: {local_filename}")
 
 def write_excel_generic(local_filename: str, temp_dir: str, header_row: int, row_offset: int, logger_instance: logging.Logger):
     try:
