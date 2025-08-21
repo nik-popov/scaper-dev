@@ -316,7 +316,7 @@ import logging
 def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, logger_instance: logging.Logger):
     """
     Write image and metadata to the Excel file for DISTRO type, with image processing to remove uniform lines
-    and sizing to maximize image size within a smaller cell, matching unedited image display.
+    and sizing to maximize image size within cell, leaving small padding on top, right, left, and bottom.
     
     Args:
         local_filename (str): Path to the Excel file.
@@ -391,7 +391,7 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                 pixels[mask] = [255, 255, 255]
                 img = PILImage.fromarray(pixels)
 
-            # Removed 130px cap to allow larger images
+            # Removed size cap to allow larger images
             img.save(image_path, 'PNG')
             return True
         except Exception as e:
@@ -436,16 +436,16 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                 ws.append([''] * ws.max_column)
                 ws.row_dimensions[row_num].height = DEFAULT_ROW_HEIGHT_POINTS
 
-        CELL_WIDTH_POINTS = 20  # Reduced for smaller cell width (~144px)
+        CELL_WIDTH_POINTS = 15  # Smaller cell width (~108px)
         CELL_HEIGHT_POINTS = max(DEFAULT_ROW_HEIGHT_POINTS, 150)
-        PADDING_POINTS = 2  # Reduced to minimize space loss
-        CELL_WIDTH_PIXELS = points_to_pixels(CELL_WIDTH_POINTS)  # ~144px
-        CELL_HEIGHT_PIXELS = points_to_pixels(CELL_HEIGHT_POINTS)  # ~1080px
+        PADDING_POINTS = 1  # Minimal padding (~0.75px per side)
+        CELL_WIDTH_PIXELS = points_to_pixels(CELL_WIDTH_POINTS) - points_to_pixels(PADDING_POINTS * 2)  # ~106.5px
+        CELL_HEIGHT_PIXELS = points_to_pixels(CELL_HEIGHT_POINTS) - points_to_pixels(PADDING_POINTS * 2)  # ~1078.5px
         temp_files = []  # Track temporary processed images for cleanup
 
         for row_id in range(min_row_id, max_row_id + 1):
             row_num = row_id + header_row
-            ws.row_dimensions[row_num].height = CELL_HEIGHT_POINTS
+            ws.row_dimensions[row_num].height = CELL_HEIGHT_POINTS + PADDING_POINTS * 2  # Add padding to row height
 
             if row_id in row_data_map:
                 item = row_data_map[row_id]
@@ -454,7 +454,7 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                     if verify_and_process_image(image_path, logger_instance):
                         processed_img = process_image_remove_lines(image_path, logger_instance)
                         if processed_img:
-                            # Resize to fill cell, maximizing size
+                            # Resize to fill cell, maximizing size with small padding
                             w, h = processed_img.size
                             width_ratio = CELL_WIDTH_PIXELS / w
                             height_ratio = CELL_HEIGHT_PIXELS / h
@@ -480,7 +480,7 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                             ws.column_dimensions['A'].width = max(ws.column_dimensions['A'].width or CELL_WIDTH_POINTS, required_width)
 
                             cell_width_pixels = points_to_pixels(ws.column_dimensions['A'].width)
-                            cell_height_pixels = points_to_pixels(CELL_HEIGHT_POINTS)
+                            cell_height_pixels = points_to_pixels(ws.row_dimensions[row_num].height)
 
                             x_offset_pixels = (cell_width_pixels - img_width_pixels) / 2
                             y_offset_pixels = (cell_height_pixels - img_height_pixels) / 2
@@ -501,11 +501,13 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                             ws.add_image(img)
                             logger_instance.info(
                                 f"Added centered image for Row {row_id} at Excel row {row_num}, "
-                                f"height={CELL_HEIGHT_POINTS} points, width={ws.column_dimensions['A'].width:.2f} points, "
+                                f"height={ws.row_dimensions[row_num].height:.2f} points, width={ws.column_dimensions['A'].width:.2f} points, "
                                 f"x_offset={x_offset_pixels:.2f}px, y_offset={y_offset_pixels:.2f}px, "
                                 f"img_width={img_width_pixels}px, cell_width={cell_width_pixels:.2f}px, "
                                 f"left_margin={(cell_width_pixels - img_width_pixels) / 2:.2f}px, "
-                                f"right_margin={(cell_width_pixels - img_width_pixels) / 2:.2f}px"
+                                f"right_margin={(cell_width_pixels - img_width_pixels) / 2:.2f}px, "
+                                f"top_margin={(cell_height_pixels - img_height_pixels) / 2:.2f}px, "
+                                f"bottom_margin={(cell_height_pixels - img_height_pixels) / 2:.2f}px"
                             )
                         else:
                             logger_instance.warning(f"Image processing failed for Row {row_id}, writing metadata only")
