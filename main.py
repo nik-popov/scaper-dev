@@ -301,10 +301,21 @@ from openpyxl.drawing.spreadsheet_drawing import TwoCellAnchor, AnchorMarker
 from openpyxl.drawing.xdr import XDRPositiveSize2D
 from openpyxl.utils.units import pixels_to_EMU, points_to_pixels
 
+from pathlib import Path
+from typing import List, Dict, Optional
+import logging
+import numpy as np
+from PIL import Image as PILImage
+from openpyxl import load_workbook
+from openpyxl.drawing.image import Image
+from openpyxl.drawing.spreadsheet_drawing import TwoCellAnchor, AnchorMarker
+from openpyxl.drawing.xdr import XDRPositiveSize2D
+from openpyxl.utils.units import pixels_to_EMU, points_to_pixels
+
 def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, logger_instance: logging.Logger):
     """
-    Write image and metadata to the Excel file for DISTRO type, ensuring proper scaling of cropped images
-    to fit template cell width (horizontal images) or height (vertical images) and preventing corruption.
+    Write image and metadata to the Excel file for DISTRO type, ensuring cropped and horizontal images
+    are scaled to exactly fill the template cell width (horizontal) or height (vertical) with no margins.
 
     Args:
         local_filename (str): Path to the Excel file.
@@ -400,6 +411,15 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
             logger_instance.error(f"Image verification failed for {image_path}: {e}", exc_info=True)
             return False
 
+    def get_last_non_empty_row(ws, column: str, header_row: int, logger_instance: logging.Logger) -> int:
+        """Find the last non-empty row in the specified column, starting after header_row."""
+        last_row = header_row
+        for row in ws[f"{column}{header_row + 1}:{column}{ws.max_row}"]:
+            if row[0].value is not None and str(row[0].value).strip():
+                last_row = max(last_row, row[0].row)
+        logger_instance.info(f"Last non-empty row in column {column}: {last_row}")
+        return last_row
+
     try:
         header_row = int(header_row)  # Ensure header_row is an integer
         wb = load_workbook(local_filename)
@@ -439,7 +459,7 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
 
         for row_id in range(min_row_id, max_row_id + 1):
             row_num = row_id + header_row
-            ws.row_dimensions[row_num].height = CELL_HEIGHT_POINTS  # Match template cell height
+            ws.row_dimensions[row_num].height = CELL_HEIGHT_POINTS  # Set row height to template cell height
 
             if row_id in row_data_map:
                 item = row_data_map[row_id]
@@ -448,20 +468,24 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                     if verify_and_process_image(image_path, logger_instance):
                         processed_img = process_image_remove_lines(image_path, logger_instance)
                         if processed_img:
-                            # Resize to exactly fit template cell width (horizontal) or height (vertical)
+                            # Scale to exactly fill cell width (horizontal) or height (vertical)
                             w, h = processed_img.size
                             aspect_ratio = w / h
                             if aspect_ratio > 1:  # Horizontal image
-                                scale = CELL_WIDTH_PIXELS / w
+                                new_width = int(CELL_WIDTH_PIXELS)
+                                new_height = int(CELL_WIDTH_PIXELS / aspect_ratio)
                                 orientation = "horizontal"
                             else:  # Vertical image
-                                scale = CELL_HEIGHT_PIXELS / h
+                                new_height = int(CELL_HEIGHT_PIXELS)
+                                new_width = int(CELL_HEIGHT_PIXELS * aspect_ratio)
                                 orientation = "vertical"
-                            new_width = int(w * scale)
-                            new_height = int(h * scale)
-                            if scale != 1.0:
-                                processed_img = processed_img.resize((new_width, new_height), PILImage.Resampling.LANCZOS)
-                                logger_instance.info(f"Resized {orientation} image for Row {row_id} to width={new_width}px, height={new_height}px")
+
+                            # Ensure at least 1 pixel to avoid zero-dimension issues
+                            new_width = max(1, new_width)
+                            new_height = max(1, new_height)
+
+                            processed_img = processed_img.resize((new_width, new_height), PILImage.Resampling.LANCZOS)
+                            logger_instance.info(f"Scaled {orientation} image for Row {row_id} to width={new_width}px, height={new_height}px")
 
                             # Save processed image to temporary file
                             temp_processed_path = os.path.join(temp_dir, f"processed_{row_id}.png")
@@ -474,17 +498,13 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                             img_width_points = img_width_pixels * 72 / 96
                             img_height_points = img_height_pixels * 72 / 96
 
-                            # Set column width and row height to template cell size
-                            ws.column_dimensions['A'].width = CELL_WIDTH_POINTS
+                            # Set column width and row height to exactly match image dimensions
+                            ws.column_dimensions['A'].width = max(CELL_WIDTH_POINTS, img_width_points)
                             ws.row_dimensions[row_num].height = max(CELL_HEIGHT_POINTS, img_height_points)
 
-                            # Center the image in the cell
-                            x_offset_pixels = (CELL_WIDTH_PIXELS - img_width_pixels) / 2
-                            y_offset_pixels = (CELL_HEIGHT_PIXELS - img_height_pixels) / 2
-                            x_offset_pixels = max(0, x_offset_pixels)
-                            y_offset_pixels = max(0, y_offset_pixels)
-                            x_offset_emu = pixels_to_EMU(x_offset_pixels)
-                            y_offset_emu = pixels_to_EMU(y_offset_pixels)
+                            # No offsets to ensure image fills the entire cell
+                            x_offset_emu = 0
+                            y_offset_emu = 0
 
                             anchor = TwoCellAnchor(
                                 editAs='absolute',
@@ -495,10 +515,9 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                             img.anchor = anchor
                             ws.add_image(img)
                             logger_instance.info(
-                                f"Added centered {orientation} image for Row {row_id} at Excel row {row_num}, "
+                                f"Added full-size {orientation} image for Row {row_id} at Excel row {row_num}, "
                                 f"height={ws.row_dimensions[row_num].height:.2f} points, width={ws.column_dimensions['A'].width:.2f} points, "
-                                f"x_offset={x_offset_pixels:.2f}px, y_offset={y_offset_pixels:.2f}px, "
-                                f"img_width={img_width_pixels}px, cell_width={CELL_WIDTH_PIXELS:.2f}px"
+                                f"img_width={img_width_pixels}px, img_height={img_height_pixels}px, cell_width={CELL_WIDTH_PIXELS}px, cell_height={CELL_HEIGHT_PIXELS}px"
                             )
                         else:
                             logger_instance.warning(f"Image processing failed for Row {row_id}, writing metadata only")
