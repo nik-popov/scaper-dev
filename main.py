@@ -316,7 +316,7 @@ import logging
 def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, logger_instance: logging.Logger):
     """
     Write image and metadata to the Excel file for DISTRO type, with image processing to remove uniform lines
-    and sizing to fill cell either horizontally or vertically, preserving aspect ratio like unedited images.
+    and sizing to fill cell either horizontally or vertically, matching unedited image display size.
     
     Args:
         local_filename (str): Path to the Excel file.
@@ -438,11 +438,11 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                 ws.append([''] * ws.max_column)
                 ws.row_dimensions[row_num].height = DEFAULT_ROW_HEIGHT_POINTS
 
-        CELL_WIDTH_POINTS = 25
+        CELL_WIDTH_POINTS = 30  # Increased to ~216px to match larger unedited image size
         CELL_HEIGHT_POINTS = max(DEFAULT_ROW_HEIGHT_POINTS, 150)
         PADDING_POINTS = 5
-        CELL_WIDTH_PIXELS = points_to_pixels(CELL_WIDTH_POINTS) - points_to_pixels(PADDING_POINTS * 2)  # ~144px
-        CELL_HEIGHT_PIXELS = points_to_pixels(CELL_HEIGHT_POINTS) - points_to_pixels(PADDING_POINTS * 2)  # ~1080px
+        CELL_WIDTH_PIXELS = points_to_pixels(CELL_WIDTH_POINTS)  # ~216px
+        CELL_HEIGHT_PIXELS = points_to_pixels(CELL_HEIGHT_POINTS)  # ~1080px
         temp_files = []  # Track temporary processed images for cleanup
 
         for row_id in range(min_row_id, max_row_id + 1):
@@ -456,11 +456,11 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                     if verify_and_process_image(image_path, logger_instance):
                         processed_img = process_image_remove_lines(image_path, logger_instance)
                         if processed_img:
-                            # Resize to fill cell either horizontally or vertically, preserving aspect ratio
+                            # Resize to fill cell either horizontally or vertically, maximizing size
                             w, h = processed_img.size
                             width_ratio = CELL_WIDTH_PIXELS / w
                             height_ratio = CELL_HEIGHT_PIXELS / h
-                            scale = min(width_ratio, height_ratio)  # Choose smaller ratio to fit within cell
+                            scale = min(width_ratio, height_ratio)  # Choose smaller ratio to fit cell
                             new_width = int(w * scale)
                             new_height = int(h * scale)
                             if scale != 1.0:  # Only resize if needed
