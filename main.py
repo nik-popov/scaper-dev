@@ -304,7 +304,7 @@ from pathlib import Path
 from typing import List, Dict, Optional
 import logging
 import numpy as np
-from PIL import Image as PILImage
+from PIL import Image as PILImage, ImageOps
 from openpyxl import load_workbook
 from openpyxl.drawing.image import Image
 from openpyxl.drawing.spreadsheet_drawing import TwoCellAnchor, AnchorMarker
@@ -323,7 +323,7 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
         header_row (int): Row index of the header in the Excel file.
         logger_instance (logging.Logger): Logger for tracking operations.
     """
-    def get_valid_indices_with_padding(valid_indices, max_index, pad=5):
+    def get_valid_indices_with_padding(valid_indices, max_index, pad=10):
         """Identify indices with padding for non-uniform rows/columns."""
         padded = set()
         for idx in valid_indices:
@@ -333,38 +333,54 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
         return sorted(padded)
 
     def process_image_remove_lines(image_path: str, logger_instance: logging.Logger) -> Optional[PILImage.Image]:
-        """Process image to remove uniform horizontal and vertical lines with padding, returning original if no cropping needed."""
+        """Process image to remove uniform horizontal and vertical lines with padding, returning original if no cropping needed or if cropping results in too small image."""
         try:
             with PILImage.open(image_path) as img:
                 img.verify()  # Verify image integrity before processing
-            img = PILImage.open(image_path).convert('RGB')  # Convert to RGB to avoid RGBA issues
+            img = PILImage.open(image_path)
+            img = ImageOps.exif_transpose(img)  # Handle EXIF orientation
+            img = img.convert('RGB')  # Convert to RGB to avoid RGBA issues
             arr = np.array(img)  # Shape: (height, width, 3)
-            height, width, _ = arr.shape
+            original_height, original_width, _ = arr.shape
 
-            # Step 1: Detect non-uniform horizontal lines
-            valid_row_indices = [y for y in range(height) if not np.all(arr[y] == arr[y][0])]
+            # Step 1: Detect non-uniform horizontal lines with tolerance
+            valid_row_indices = []
+            for y in range(original_height):
+                row_max_min_diff = np.max(arr[y], axis=0) - np.min(arr[y], axis=0)
+                if np.any(row_max_min_diff >= 10):  # Tolerance for uniformity
+                    valid_row_indices.append(y)
             row_cropped = False
             if valid_row_indices:
-                rows_to_keep = get_valid_indices_with_padding(valid_row_indices, height - 1, pad=5)
-                row_cropped = len(rows_to_keep) != height
+                rows_to_keep = get_valid_indices_with_padding(valid_row_indices, original_height - 1, pad=10)
+                row_cropped = len(rows_to_keep) != original_height
                 arr = arr[rows_to_keep, :, :]
-                logger_instance.info(f"Kept {len(rows_to_keep)} of {height} rows (with padding) for {image_path}")
+                logger_instance.info(f"Kept {len(rows_to_keep)} of {original_height} rows (with padding) for {image_path}")
             else:
                 logger_instance.warning(f"No non-uniform rows found in image: {image_path}")
 
-            # Step 2: Detect non-uniform vertical lines
+            # Step 2: Detect non-uniform vertical lines with tolerance
             arr_T = arr.transpose(1, 0, 2)
             new_width = arr_T.shape[0]
-            valid_col_indices = [x for x in range(new_width) if not np.all(arr_T[x] == arr_T[x][0])]
+            valid_col_indices = []
+            for x in range(new_width):
+                col_max_min_diff = np.max(arr_T[x], axis=0) - np.min(arr_T[x], axis=0)
+                if np.any(col_max_min_diff >= 10):  # Tolerance for uniformity
+                    valid_col_indices.append(x)
             col_cropped = False
             if valid_col_indices:
-                cols_to_keep = get_valid_indices_with_padding(valid_col_indices, new_width - 1, pad=5)
+                cols_to_keep = get_valid_indices_with_padding(valid_col_indices, new_width - 1, pad=10)
                 col_cropped = len(cols_to_keep) != new_width
                 arr_cleaned = arr_T[cols_to_keep, :, :].transpose(1, 0, 2)
                 logger_instance.info(f"Kept {len(cols_to_keep)} of {new_width} columns (with padding) for {image_path}")
             else:
                 arr_cleaned = arr
                 logger_instance.info(f"No non-uniform columns found in image: {image_path}")
+
+            cleaned_height, cleaned_width, _ = arr_cleaned.shape
+            min_dim = 50
+            if (row_cropped or col_cropped) and (cleaned_height < min_dim or cleaned_width < min_dim):
+                logger_instance.warning(f"Cropping resulted in too small image ({cleaned_height}x{cleaned_width}) for {image_path}. Returning original.")
+                return img  # Return original if cropped too small
 
             if not row_cropped and not col_cropped:
                 logger_instance.info(f"No cropping occurred for {image_path}. Returning original.")
@@ -378,8 +394,8 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
     def verify_and_process_image(image_path: str, logger_instance: logging.Logger) -> bool:
         """Verify, crop, and process image to meet size and format requirements."""
         try:
-            with PILImage.open(image_path) as img:
-                img.verify()  # Verify image integrity
+            img = PILImage.open(image_path)
+            img.load()  # Fully load the image to catch decoding errors
             if os.path.getsize(image_path) < 1000:  # Use MIN_IMAGE_SIZE for consistency
                 logger_instance.warning(f"File too small: {image_path}")
                 return False
@@ -409,7 +425,8 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                 processed_img = PILImage.fromarray(pixels)
 
             # Resize if dimensions exceed MAX_IMAGE_DIMENSION
-            h, w = processed_img.size
+            w, h = processed_img.size  # Note: size is (width, height)
+            MAX_IMAGE_DIMENSION = 130
             if h > MAX_IMAGE_DIMENSION or w > MAX_IMAGE_DIMENSION:
                 processed_img.thumbnail((MAX_IMAGE_DIMENSION, MAX_IMAGE_DIMENSION), PILImage.Resampling.LANCZOS)
                 logger_instance.info(f"Resized image {image_path} to fit max dimension {MAX_IMAGE_DIMENSION}")
@@ -435,7 +452,7 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
         header_row = int(header_row)
         wb = load_workbook(local_filename)
         ws = wb.active
-        image_map = {int(Path(f).stem): f for f in os.listdir(temp_dir) if Path(f).stem.isdigit()}
+        image_map = {int(Path(f).stem): f for f in Path(temp_dir).iterdir() if f.stem.isdigit()}
 
         DEFAULT_ROW_HEIGHT_POINTS = ws.row_dimensions.get(header_row + 1, {}).height or 12.75
         logger_instance.info(f"Using template row height: {DEFAULT_ROW_HEIGHT_POINTS} points from row {header_row + 1}")
@@ -472,7 +489,7 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
             if row_id in row_data_map:
                 item = row_data_map[row_id]
                 if row_id in image_map:
-                    image_path = os.path.join(temp_dir, image_map[row_id])
+                    image_path = str(Path(temp_dir) / image_map[row_id])
                     if verify_and_process_image(image_path, logger_instance):
                         img = Image(image_path)
                         img_height_pixels = img.height if hasattr(img, 'height') else 0
