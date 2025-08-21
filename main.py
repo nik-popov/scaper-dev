@@ -315,7 +315,7 @@ import logging
 def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, logger_instance: logging.Logger):
     """
     Write image and metadata to the Excel file for DISTRO type, with image processing to remove uniform lines
-    and sizing to fill template cell size (width or height) based on aspect ratio, scaled 4–5x larger, with no padding.
+    and sizing to exactly fill template cell width (horizontal images) or height (vertical images) based on aspect ratio.
     
     Args:
         local_filename (str): Path to the Excel file.
@@ -440,7 +440,6 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
         PADDING_POINTS = 0  # No padding to maximize image size
         CELL_WIDTH_PIXELS = points_to_pixels(CELL_WIDTH_POINTS)  # ~216px
         CELL_HEIGHT_PIXELS = points_to_pixels(CELL_HEIGHT_POINTS)  # ~1080px
-        SCALE_FACTOR = 4.5  # Target 4–5x larger size (midpoint)
         temp_files = []  # Track temporary processed images for cleanup
 
         for row_id in range(min_row_id, max_row_id + 1):
@@ -454,18 +453,20 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                     if verify_and_process_image(image_path, logger_instance):
                         processed_img = process_image_remove_lines(image_path, logger_instance)
                         if processed_img:
-                            # Resize to target 4–5x larger, capped at template cell size
+                            # Resize to exactly fill template cell width (horizontal) or height (vertical)
                             w, h = processed_img.size
-                            target_width = min(w * SCALE_FACTOR, CELL_WIDTH_PIXELS)
-                            target_height = min(h * SCALE_FACTOR, CELL_HEIGHT_PIXELS)
-                            width_ratio = target_width / w
-                            height_ratio = target_height / h
-                            scale = min(width_ratio, height_ratio)  # Fit within cell
+                            aspect_ratio = w / h
+                            if aspect_ratio > 1:  # Horizontal image (wider than tall)
+                                scale = CELL_WIDTH_PIXELS / w
+                                orientation = "horizontal"
+                            else:  # Vertical image (taller than wide or square)
+                                scale = CELL_HEIGHT_PIXELS / h
+                                orientation = "vertical"
                             new_width = int(w * scale)
                             new_height = int(h * scale)
                             if scale != 1.0:  # Only resize if needed
                                 processed_img = processed_img.resize((new_width, new_height), PILImage.Resampling.LANCZOS)
-                                logger_instance.info(f"Resized image for Row {row_id} to width={new_width}px, height={new_height}px")
+                                logger_instance.info(f"Resized {orientation} image for Row {row_id} to width={new_width}px, height={new_height}px")
 
                             temp_processed_path = os.path.join(temp_dir, f"processed_{row_id}.png")
                             processed_img.save(temp_processed_path, 'PNG')
@@ -502,7 +503,7 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                             img.anchor = anchor
                             ws.add_image(img)
                             logger_instance.info(
-                                f"Added centered image for Row {row_id} at Excel row {row_num}, "
+                                f"Added centered {orientation} image for Row {row_id} at Excel row {row_num}, "
                                 f"height={ws.row_dimensions[row_num].height:.2f} points, width={ws.column_dimensions['A'].width:.2f} points, "
                                 f"x_offset={x_offset_pixels:.2f}px, y_offset={y_offset_pixels:.2f}px, "
                                 f"img_width={img_width_pixels}px, cell_width={cell_width_pixels:.2f}px, "
