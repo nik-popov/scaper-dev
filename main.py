@@ -392,8 +392,8 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                 img = PILImage.fromarray(pixels)
 
             h, w = img.size
-            if h > 130 or w > 130:
-                img.thumbnail((130, 130))
+            if h > 300 or w > 300:  # Increased from 130 to allow larger unedited images
+                img.thumbnail((300, 300))
             img.save(image_path, 'PNG')
             return True
         except Exception as e:
@@ -438,10 +438,10 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                 ws.append([''] * ws.max_column)
                 ws.row_dimensions[row_num].height = DEFAULT_ROW_HEIGHT_POINTS
 
-        CELL_WIDTH_POINTS = 30  # Increased to ~216px to match larger unedited image size
+        CELL_WIDTH_POINTS = 40  # Increased to ~288px for larger images
         CELL_HEIGHT_POINTS = max(DEFAULT_ROW_HEIGHT_POINTS, 150)
         PADDING_POINTS = 5
-        CELL_WIDTH_PIXELS = points_to_pixels(CELL_WIDTH_POINTS)  # ~216px
+        CELL_WIDTH_PIXELS = points_to_pixels(CELL_WIDTH_POINTS)  # ~288px
         CELL_HEIGHT_PIXELS = points_to_pixels(CELL_HEIGHT_POINTS)  # ~1080px
         temp_files = []  # Track temporary processed images for cleanup
 
@@ -456,11 +456,11 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                     if verify_and_process_image(image_path, logger_instance):
                         processed_img = process_image_remove_lines(image_path, logger_instance)
                         if processed_img:
-                            # Resize to fill cell either horizontally or vertically, maximizing size
+                            # Resize to fill cell, maximizing size
                             w, h = processed_img.size
                             width_ratio = CELL_WIDTH_PIXELS / w
                             height_ratio = CELL_HEIGHT_PIXELS / h
-                            scale = min(width_ratio, height_ratio)  # Choose smaller ratio to fit cell
+                            scale = min(width_ratio, height_ratio)  # Fit within cell
                             new_width = int(w * scale)
                             new_height = int(h * scale)
                             if scale != 1.0:  # Only resize if needed
