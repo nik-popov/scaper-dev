@@ -659,6 +659,22 @@ def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict],
         logger_instance.error(f"Error writing to MSRP Excel file: {e}", exc_info=True)
         raise
 
+def write_excel_generic(local_filename: str, temp_dir: str, header_row: int, row_offset: int, logger_instance: logging.Logger):
+    try:
+        wb = load_workbook(local_filename); ws = wb.active
+        image_map = {int(Path(f).stem): f for f in os.listdir(temp_dir) if Path(f).stem.isdigit()}
+
+        for row_id, image_file in image_map.items():
+            image_path = os.path.join(temp_dir, image_file)
+            if verify_and_process_image(image_path, logger_instance):
+                img = Image(image_path)
+                adjusted_row = row_id + header_row + row_offset 
+                img.anchor = f"A{adjusted_row}"; ws.add_image(img)
+        logger_instance.info("Setting worksheet view to A1.")
+        wb.save(local_filename)
+    except Exception as e:
+        logger_instance.error(f"Error writing to generic Excel file: {e}", exc_info=True)
+        raise
 # --- Main Background Task ---
 async def generate_download_file(file_id: str, row_offset: int = 0):
     timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
