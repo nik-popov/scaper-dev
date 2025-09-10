@@ -329,7 +329,7 @@ async def fetch_and_process_images(
         logger.addHandler(logging.StreamHandler())
         logger.setLevel(logging.INFO)
     try:
-        worker_url: str = "https://browser-worker.nik-97d.workers.dev",
+        worker_url: str = "https://browser-worker.nik-97d.workers.dev/",
         payload = {
             "q": query.strip('"'),  # Remove quotes if present
             "searchType": search_type,
