@@ -269,11 +269,11 @@ class SearchClient:
             return ProxyType.DATAPROXY, self.proxies[ProxyType.DATAPROXY]
 
     @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=10),
-        retry=retry_if_exception_type((aiohttp.ClientError, json.JSONDecodeError, asyncio.TimeoutError)),
-        before_sleep=before_sleep_log(default_logger, logging.WARNING)
-    )
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    retry=retry_if_exception_type((aiohttp.ClientError, json.JSONDecodeError, asyncio.TimeoutError)),
+    before_sleep=before_sleep_log(default_logger, logging.WARNING)
+)
     async def search_single_term_all_regions(self, term: str, brand: str, entry_id: int) -> List[Dict]:
         async with self.semaphore:
             process_info = psutil.Process()
@@ -281,16 +281,13 @@ class SearchClient:
             search_url_google = f"https://www.google.com/search?q={urllib.parse.quote(quoted_term)}&udm=2"
             current_session = await self._get_session()
             results = []
-
             for region_idx, region_name in enumerate(self.regions):
-                # Select proxy for this request
                 proxy_type, proxy_config = self._select_proxy()
                 current_fetch_endpoint = f"{proxy_config['endpoint']}?region={region_name}"
                 self.logger.info(
                     f"PID {process_info.pid}: Attempting search for term='{term}' (EntryID {entry_id}, Brand='{brand}') "
                     f"via {proxy_type.value} at {current_fetch_endpoint} (Region {region_idx+1}/{len(self.regions)}: {region_name})"
                 )
-
                 try:
                     async with asyncio.timeout(45):
                         async with current_session.post(
@@ -309,7 +306,6 @@ class SearchClient:
                                     f"PID {process_info.pid}: Service temporarily unavailable (Status {response.status}) for '{term}' in region {region_name} via {proxy_type.value}."
                                 )
                                 if region_idx == len(self.regions) - 1:
-                                    # Try the other proxy as a fallback
                                     fallback_proxy_type = ProxyType.ROAMINGPROXY if proxy_type == ProxyType.DATAPROXY else ProxyType.DATAPROXY
                                     fallback_endpoint = f"{self.proxies[fallback_proxy_type]['endpoint']}?region={region_name}"
                                     self.logger.info(
@@ -335,7 +331,7 @@ class SearchClient:
                                             )
                                             continue
                                         html_bytes = html_content_from_api.encode('utf-8') if isinstance(html_content_from_api, str) else str(html_content_from_api).encode('utf-8')
-                                        formatted_results_df = fetch_and_process_images(html_bytes, entry_id, self.logger)
+                                        formatted_results_df = await fetch_and_process_images(term, entry_id, logger=self.logger)  # Await the coroutine
                                         if not formatted_results_df.empty:
                                             results = [
                                                 {
@@ -372,7 +368,7 @@ class SearchClient:
                                 )
                                 continue
                             html_bytes = html_content_from_api.encode('utf-8') if isinstance(html_content_from_api, str) else str(html_content_from_api).encode('utf-8')
-                            formatted_results_df = fetch_and_process_images(html_bytes, entry_id, self.logger)
+                            formatted_results_df = await fetch_and_process_images(term, entry_id, logger=self.logger)  # Await the coroutine
                             if not formatted_results_df.empty:
                                 self.logger.info(
                                     f"PID {process_info.pid}: Successfully found {len(formatted_results_df)} results for term='{term}' "
