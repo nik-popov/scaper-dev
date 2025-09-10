@@ -10,7 +10,6 @@ import asyncio
 import time
 import os
 from .LR import LR  # Assuming LR is in icon_image_lib
-from app.email_utils import send_email  # Assuming send_email is defined in email_utils
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
