@@ -10,7 +10,7 @@ import asyncio
 import time
 import os
 from .LR import LR  # Assuming LR is in icon_image_lib
-from app.email_utils import send_email  # Adjust import based on your project structure
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -136,6 +136,81 @@ def get_original_images(html_bytes, logger=None):
     logger.debug(f"GetOriginal: URLs={len(main_image_urls)}, Desc={len(main_descriptions)}, Sources={len(main_source_urls)}, Thumbs={len(main_thumbs)}")
     return main_image_urls, main_descriptions, main_source_urls, main_thumbs
 
+def get_results_page_results(html_bytes, final_urls, final_descriptions, final_sources, final_thumbs, logger=None):
+    """Extract additional image data from results page HTML without base64."""
+    logger = logger or logging.getLogger(__name__)
+    html_content = decode_html_bytes(html_bytes, logger)
+
+    soup = BeautifulSoup(html_content, 'html.parser')
+    result_divs = soup.find_all('div', class_='H8Rx8c')
+
+    if not result_divs:
+        result_divs = soup.find_all('div', class_='isv motiva_DRHBO')
+        if not result_divs:
+            result_divs = soup.find_all('a', class_='isv-r')
+            if not result_divs:
+                logger.warning("No primary result item divs (H8Rx8c, isv motiva_DRHBO, isv-r) found")
+                return final_urls, final_descriptions, final_sources, final_thumbs
+
+    logger.info(f"Found {len(result_divs)} potential items in additional results page.")
+
+    for item_container in result_divs:
+        if len(final_urls) >= 100:
+            break
+
+        img_tag = item_container.find('img', class_=lambda c: c and any(cls in c for cls in ['rg_i', 'n3VNCb', 'YQ4gaf', 'gdOPf', 'uhHOwf', 'ez24Df']))
+        raw_thumb_url = None
+        if img_tag:
+            raw_thumb_url = img_tag.get('src') or img_tag.get('data-src')
+        
+        if not raw_thumb_url or 'data:image' in raw_thumb_url:
+            logger.debug("No valid thumbnail URL or base64 src in result item, skipping.")
+            continue
+        
+        thumb = clean_source_url(raw_thumb_url)
+        final_thumbs.append(thumb)
+
+        desc_element = item_container.find(['div', 'span', 'a'], class_=lambda c: c and any(cls in c for cls in ['bytUYc', 'VFACy', 'mVDVAe', 'VwiC3b']))
+        description = desc_element.get_text(strip=True) if desc_element else 'No description'
+        final_descriptions.append(description)
+
+        source_element = item_container.find(['cite', 'div', 'span'], class_=lambda c: c and any(cls in c for cls in ['VuuXrf', 'SW5pqf', 'qLRx3b']))
+        raw_source_text = source_element.get_text(strip=True) if source_element else 'No source'
+        
+        cleaned_source_text = clean_source_url(raw_source_text)
+        if cleaned_source_text.startswith(('http', '/', 'www.')):
+            source = extract_true_url_from_wrapper(cleaned_source_text, logger)
+        else:
+            source = cleaned_source_text
+        final_sources.append(source)
+
+        link_tag = None
+        if item_container.name == 'a':
+            link_tag = item_container
+        else:
+            link_tag = item_container.find('a', class_=lambda c: c and any(cls in c for cls in ['zReHs', 'VFACy', 'isv-r']))
+
+        raw_href = link_tag.get('href') if link_tag and link_tag.get('href') else None
+        if not raw_href and img_tag:
+            raw_href = img_tag.get('data-actualn3r')
+
+        image_url_final = 'No image URL'
+        if raw_href:
+            url1 = clean_source_url(raw_href)
+            url2 = extract_true_url_from_wrapper(url1, logger)
+            image_url_final = clean_image_url(url2)
+        final_urls.append(image_url_final)
+
+    if len(final_urls) > 100:
+        final_urls = final_urls[:100]
+        final_descriptions = final_descriptions[:100]
+        final_sources = final_sources[:100]
+        final_thumbs = final_thumbs[:100]
+        logger.debug("Capped total results from additional page processing at 100")
+
+    logger.debug(f"GetResultsPage: Total after append: URLs={len(final_urls)}")
+    return final_urls, final_descriptions, final_sources, final_thumbs
+
 def process_search_result(image_html_bytes: bytes, entry_id: int, logger=None) -> pd.DataFrame:
     """Process HTML bytes from a search result to extract image data into a DataFrame."""
     logger = logger or logging.getLogger(__name__)
@@ -178,11 +253,9 @@ def process_search_result(image_html_bytes: bytes, entry_id: int, logger=None) -
 
         logger.info(f"Processed EntryID {entry_id} with {len(df)} images.")
         return df
-
     except Exception as e:
-        logger.error(f"EntryID {entry_id}: Unexpected error: {str(e)}")
-        return pd.DataFrame()
-
+        logger.error(f"Error fetching/processing query '{query}': {str(e)}")
+        return pd.DataFrame()    
 def process_api_image_results(json_data, entry_id: int, logger=None) -> pd.DataFrame:
     """Process JSON from Google Custom Search API into a DataFrame."""
     logger = logger or logging.getLogger(__name__)
@@ -240,7 +313,9 @@ def process_api_image_results(json_data, entry_id: int, logger=None) -> pd.DataF
 
         logger.info(f"Processed EntryID {entry_id} with {len(df)} images.")
         return df
-
+    except Exception as e:
+        logger.error(f"Error fetching/processing query '{query}': {str(e)}")
+        return pd.DataFrame()
 async def fetch_and_process_images(query: str, entry_id: int, search_type: str = "image", worker_url: str = "https://browser-worker.nik-97d.workers.dev") -> pd.DataFrame:
     """Fetch image search results from Cloudflare Worker, process into a DataFrame, and send email."""
     logger = logger or logging.getLogger(__name__)
@@ -266,18 +341,22 @@ async def fetch_and_process_images(query: str, entry_id: int, search_type: str =
             df.to_csv(local_filename, index=False)
             logger.info(f"Saved DataFrame to {local_filename}")
 
-            # Send email (assuming send_email is imported elsewhere)
-            file_id = entry_id
-            success = await send_email(
-                to_emails='nik@iconluxurygroup.com',
-                subject=f'MSRP File Processed: {file_name}',
-                file_path=local_filename,
-                job_id=file_id
-            )
-            if success:
-                logger.info(f"Email sent successfully for job ID {file_id}")
-            else:
-                logger.error(f"Failed to send email for job ID {file_id}")
+            # Send email (assuming send_email is defined elsewhere)
+            try:
+                file_id = entry_id
+                success = await send_email(
+                    to_emails='nik@iconluxurygroup.com',
+                    subject=f'MSRP File Processed: {file_name}',
+                    file_path=local_filename,
+                    job_id=file_id
+                )
+                if success:
+                    logger.info(f"Email sent successfully for job ID {file_id}")
+                else:
+                    logger.error(f"Failed to send email for job ID {file_id}")
+            except ImportError:
+                logger.error("Failed to import send_email. Ensure it is defined in your project.")
+                return df
 
         return df
 
