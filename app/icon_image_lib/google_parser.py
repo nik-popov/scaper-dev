@@ -315,9 +315,18 @@ def process_api_image_results(json_data, entry_id: int, logger=None) -> pd.DataF
     except Exception as e:
         logger.error(f"Error fetching/processing query '{entry_id}': {str(e)}")
         return pd.DataFrame()
-async def fetch_and_process_images(query: str, entry_id: int, search_type: str = "image", worker_url: str = "https://browser-worker.nik-97d.workers.dev") -> pd.DataFrame:
+async def fetch_and_process_images(
+    query: str,
+    entry_id: int,
+    search_type: str = "image",
+    worker_url: str = "https://browser-worker.nik-97d.workers.dev",
+    logger: logging.Logger = None
+) -> pd.DataFrame:
     """Fetch image search results from Cloudflare Worker, process into a DataFrame, and send email."""
     logger = logger or logging.getLogger(__name__)
+    if not logger.handlers:
+        logger.addHandler(logging.StreamHandler())
+        logger.setLevel(logging.INFO)
     try:
         # Construct URL
         encoded_query = urllib.parse.quote_plus(query)
@@ -332,7 +341,6 @@ async def fetch_and_process_images(query: str, entry_id: int, search_type: str =
 
         json_data = response.json()
         df = process_api_image_results(json_data, entry_id, logger)
-
 
         return df
 
