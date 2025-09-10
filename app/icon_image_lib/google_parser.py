@@ -10,6 +10,7 @@ import asyncio
 import time
 import os
 from .LR import LR  # Assuming LR is in icon_image_lib
+from app.email_utils import send_email  # Assuming send_email is defined in email_utils
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -253,7 +254,7 @@ def process_search_result(image_html_bytes: bytes, entry_id: int, logger=None) -
         logger.info(f"Processed EntryID {entry_id} with {len(df)} images.")
         return df
     except Exception as e:
-        logger.error(f"Error fetching/processing query '{entry_id}': {str(e)}")
+        logger.error(f"Error processing search result for EntryID {entry_id}: {str(e)}")
         return pd.DataFrame()    
 def process_api_image_results(json_data, entry_id: int, logger=None) -> pd.DataFrame:
     """Process JSON from Google Custom Search API into a DataFrame."""
@@ -313,20 +314,15 @@ def process_api_image_results(json_data, entry_id: int, logger=None) -> pd.DataF
         logger.info(f"Processed EntryID {entry_id} with {len(df)} images.")
         return df
     except Exception as e:
-        logger.error(f"Error fetching/processing query '{entry_id}': {str(e)}")
+        logger.error(f"Error processing API results for EntryID {entry_id}: {str(e)}")
         return pd.DataFrame()
-async def fetch_and_process_images(
-    query: str,
-    entry_id: int,
-    search_type: str = "image",
-    worker_url: str = "https://browser-worker.nik-97d.workers.dev",
-    logger: logging.Logger = None
-) -> pd.DataFrame:
-    """Fetch image search results from Cloudflare Worker, process into a DataFrame, and send email."""
+async def fetch_and_process_images(query: str, entry_id: int, search_type: str = "image", worker_url: str = "https://browser-worker.nik-97d.workers.dev") -> pd.DataFrame:
+    """Fetch image search results from Cloudflare Worker, process into a DataFrame, and send email.
+    
+    This function uses the image API (Cloudflare Worker) as the default method for fetching and processing image search results.
+    Legacy HTML parsing functions are retained but not called here; prefer this API-based approach for all new implementations.
+    """
     logger = logger or logging.getLogger(__name__)
-    if not logger.handlers:
-        logger.addHandler(logging.StreamHandler())
-        logger.setLevel(logging.INFO)
     try:
         # Construct URL
         encoded_query = urllib.parse.quote_plus(query)
