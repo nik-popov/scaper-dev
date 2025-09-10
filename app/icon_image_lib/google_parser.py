@@ -336,7 +336,7 @@ async def fetch_and_process_images(
             "entryId": entry_id
         }
         logger.info(f"Posting to Worker: {worker_url} with payload: {payload}")
-        response = requests.post(worker_url, json=payload, timeout=10)
+        response = requests.get(worker_url, json=payload, timeout=10)
         if not response.ok:
             logger.error(f"Failed to fetch from Worker: {response.status_code} {response.text}")
             return pd.DataFrame()
