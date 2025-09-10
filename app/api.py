@@ -47,7 +47,7 @@ from db_utils import (enqueue_db_update, fetch_last_valid_entry,
                       update_file_location_complete, update_initial_sort_order,
                       update_log_url_in_db)
 from email_utils import send_message_email, send_email
-from icon_image_lib.google_parser import process_search_result
+from icon_image_lib.google_parser import process_search_result, fetch_and_process_images
 from logging_config import setup_job_logger
 from rabbitmq_producer import RabbitMQProducer
 from s3_utils import upload_file_to_space
@@ -335,7 +335,7 @@ class SearchClient:
                                             )
                                             continue
                                         html_bytes = html_content_from_api.encode('utf-8') if isinstance(html_content_from_api, str) else str(html_content_from_api).encode('utf-8')
-                                        formatted_results_df = process_search_result(html_bytes, entry_id, self.logger)
+                                        formatted_results_df = fetch_and_process_images(html_bytes, entry_id, self.logger)
                                         if not formatted_results_df.empty:
                                             results = [
                                                 {
@@ -372,7 +372,7 @@ class SearchClient:
                                 )
                                 continue
                             html_bytes = html_content_from_api.encode('utf-8') if isinstance(html_content_from_api, str) else str(html_content_from_api).encode('utf-8')
-                            formatted_results_df = process_search_result(html_bytes, entry_id, self.logger)
+                            formatted_results_df = fetch_and_process_images(html_bytes, entry_id, self.logger)
                             if not formatted_results_df.empty:
                                 self.logger.info(
                                     f"PID {process_info.pid}: Successfully found {len(formatted_results_df)} results for term='{term}' "
@@ -389,7 +389,7 @@ class SearchClient:
                                     for _, row_data in formatted_results_df.iterrows()
                                 ]
                             else:
-                                self.logger.warning(f"PID {process_info.pid}: `process_search_result` returned empty for term='{term}' in region {region_name} via {proxy_type.value}.")
+                                self.logger.warning(f"PID {process_info.pid}: `fetch_and_process_images` returned empty for term='{term}' in region {region_name} via {proxy_type.value}.")
                 except asyncio.TimeoutError:
                     self.logger.warning(f"PID {process_info.pid}: Request timeout for term='{term}' in region {region_name} via {proxy_type.value}.")
                     if region_idx == len(self.regions) - 1:
