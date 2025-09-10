@@ -320,16 +320,16 @@ def process_api_image_results(json_data, entry_id: int, logger=None) -> pd.DataF
 async def fetch_and_process_images(
     query: str,
     entry_id: int,
+    brand: str = None,
     search_type: str = "image",
-    worker_url: str = "https://browser-worker.nik-97d.workers.dev",
     logger: logging.Logger = None,
-    brand: str = None
 ) -> pd.DataFrame:
     logger = logger or logging.getLogger(__name__)
     if not logger.handlers:
         logger.addHandler(logging.StreamHandler())
         logger.setLevel(logging.INFO)
     try:
+        worker_url: str = "https://browser-worker.nik-97d.workers.dev",
         payload = {
             "q": query.strip('"'),  # Remove quotes if present
             "searchType": search_type,
