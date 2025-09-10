@@ -1585,7 +1585,9 @@ async def api_populate_results_from_warehouse(
             else:
                 logger.error(f"[{job_run_id}] Failed to enqueue results.")
                 counters["num_processing_errors"] += len(results_to_insert)
-
+        final_log_s3_url = await upload_log_file(
+                job_run_id, log_file_path, logger, db_record_file_id_to_update=file_id
+            )
         # Final logging and response
         final_message = (
             f"Warehouse population for FileID '{file_id}': "
@@ -1617,10 +1619,6 @@ async def api_populate_results_from_warehouse(
                 logger.error(
                     f"[{job_run_id}] Failed to send email: {e_email}", exc_info=True
                 )
-
-        final_log_s3_url = await upload_log_file(
-            job_run_id, log_file_path, logger, db_record_file_id_to_update=file_id
-        )
         
         return {
             "status": "processing_enqueued"
