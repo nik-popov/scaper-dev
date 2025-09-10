@@ -349,14 +349,6 @@ async def fetch_and_process_images(query: str, entry_id: int, search_type: str =
 
         json_data = response.json()
         df = process_api_image_results(json_data, entry_id, logger)
-
-        if not df.empty:
-            # Save DataFrame to CSV
-            file_name = f"image_results_{query}_{int(time.time())}.csv"
-            local_filename = f"/tmp/{file_name}"
-            df.to_csv(local_filename, index=False)
-            logger.info(f"Saved DataFrame for query '{query}' (EntryID {entry_id}) to {local_filename}")
-
     except Exception as e:
         logger.error(f"Error fetching/processing query '{query}' for EntryID {entry_id}: {str(e)}")
         return pd.DataFrame()
