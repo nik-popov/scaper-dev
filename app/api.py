@@ -2395,7 +2395,8 @@ async def api_warehouse_batch_query_and_populate(
                             logger.info(f"[{job_run_id}] Enqueued MSRP update for EntryID {entry['EntryID']}: {currency} = {msrp_value_float}")
                         counters["num_warehouse_matches"] += 1
                         return entry["EntryID"], True
-                    
+                    model_folder = model_folder if model_folder is not None else ''
+                    model_image = model_image if model_image is not None else ''
                     img_url = f"{base_image_url.rstrip('/')}/{model_folder.strip('/')}/{model_image}"
                     desc = f"{entry.get('ProductBrand', 'Brand')} {warehouse_match.get('ModelNumber', entry.get('ProductModel', 'Product'))} - MSRP USD: {warehouse_match.get('MSRPUSD', 'N/A')}, EUR: {warehouse_match.get('MSRPEUR', 'N/A')}"
                     source_domain = urlparse(base_image_url).netloc or "warehouse.internal"
