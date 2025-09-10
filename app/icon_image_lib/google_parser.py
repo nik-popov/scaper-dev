@@ -10,6 +10,7 @@ import asyncio
 import time
 import os
 from .LR import LR  # Assuming LR is in icon_image_lib
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -254,9 +255,10 @@ def process_search_result(image_html_bytes: bytes, entry_id: int, logger=None) -
         return df
     except Exception as e:
         logger.error(f"Error processing search result for EntryID {entry_id}: {str(e)}")
-        return pd.DataFrame()    
+        return pd.DataFrame()
+
 def process_api_image_results(json_data, entry_id: int, logger=None) -> pd.DataFrame:
-    """Process JSON from Google Custom Search API into a DataFrame."""
+    """Process JSON from image API into a DataFrame."""
     logger = logger or logging.getLogger(__name__)
     if not logger.handlers:
         logger.addHandler(logging.StreamHandler())
@@ -315,11 +317,23 @@ def process_api_image_results(json_data, entry_id: int, logger=None) -> pd.DataF
     except Exception as e:
         logger.error(f"Error processing API results for EntryID {entry_id}: {str(e)}")
         return pd.DataFrame()
-async def fetch_and_process_images(query: str, entry_id: int, search_type: str = "image", worker_url: str = "https://browser-worker.nik-97d.workers.dev") -> pd.DataFrame:
+
+async def fetch_and_process_images(query: str, entry_id: int, search_type: str = "image", worker_url: str = "https://browser-worker.nik-97d.workers.dev", logger=None) -> pd.DataFrame:
     """Fetch image search results from Cloudflare Worker, process into a DataFrame, and send email.
     
-    This function uses the image API (Cloudflare Worker) as the default method for fetching and processing image search results.
-    Legacy HTML parsing functions are retained but not called here; prefer this API-based approach for all new implementations.
+    This function uses the image API (Cloudflare Worker at https://browser-worker.nik-97d.workers.dev) as the default method for fetching and processing image search results.
+    Legacy HTML parsing functions (e.g., get_original_images, get_results_page_results) are retained for compatibility but should not be used for new implementations.
+    Use this API-based approach for all image search queries.
+
+    Args:
+        query (str): The search term (e.g., SKU or product name).
+        entry_id (int): Unique identifier for the search entry.
+        search_type (str): Type of search, defaults to "image".
+        worker_url (str): URL of the image API, defaults to Cloudflare Worker.
+        logger (logging.Logger, optional): Logger instance, defaults to module-level logger.
+
+    Returns:
+        pd.DataFrame: DataFrame containing image URLs, descriptions, sources, and thumbnails.
     """
     logger = logger or logging.getLogger(__name__)
     try:
@@ -340,5 +354,5 @@ async def fetch_and_process_images(query: str, entry_id: int, search_type: str =
         return df
 
     except Exception as e:
-        logger.error(f"Error fetching/processing query '{query}': {str(e)}")
+        logger.error(f"Error fetching/processing query '{query}' for EntryID {entry_id}: {str(e)}")
         return pd.DataFrame()
