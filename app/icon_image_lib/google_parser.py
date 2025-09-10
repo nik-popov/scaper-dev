@@ -322,7 +322,8 @@ async def fetch_and_process_images(
     entry_id: int,
     search_type: str = "image",
     worker_url: str = "https://browser-worker.nik-97d.workers.dev",
-    logger: logging.Logger = None
+    logger: logging.Logger = None,
+    brand: str = None
 ) -> pd.DataFrame:
     logger = logger or logging.getLogger(__name__)
     if not logger.handlers:
