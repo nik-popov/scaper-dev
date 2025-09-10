@@ -10,8 +10,7 @@ import asyncio
 import time
 import os
 from .LR import LR  # Assuming LR is in icon_image_lib
-
-# Configure logging
+#onfigure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -94,7 +93,7 @@ def decode_html_bytes(html_bytes, logger):
         return html_bytes.decode('utf-8', errors='replace')
 
 def get_original_images(html_bytes, logger=None):
-    """Extract image data from Google image search HTML."""
+    """Extract image data from Google image search HTML. Deprecated: Use fetch_and_process_images instead."""
     logger = logger or logging.getLogger(__name__)
     html_content = decode_html_bytes(html_bytes, logger)
 
@@ -137,7 +136,7 @@ def get_original_images(html_bytes, logger=None):
     return main_image_urls, main_descriptions, main_source_urls, main_thumbs
 
 def get_results_page_results(html_bytes, final_urls, final_descriptions, final_sources, final_thumbs, logger=None):
-    """Extract additional image data from results page HTML without base64."""
+    """Extract additional image data from results page HTML without base64. Deprecated: Use fetch_and_process_images instead."""
     logger = logger or logging.getLogger(__name__)
     html_content = decode_html_bytes(html_bytes, logger)
 
@@ -212,7 +211,7 @@ def get_results_page_results(html_bytes, final_urls, final_descriptions, final_s
     return final_urls, final_descriptions, final_sources, final_thumbs
 
 def process_search_result(image_html_bytes: bytes, entry_id: int, logger=None) -> pd.DataFrame:
-    """Process HTML bytes from a search result to extract image data into a DataFrame."""
+    """Process HTML bytes from a search result to extract image data into a DataFrame. Deprecated: Use fetch_and_process_images instead."""
     logger = logger or logging.getLogger(__name__)
     if not logger.handlers:
         logger.addHandler(logging.StreamHandler())
@@ -318,40 +317,45 @@ def process_api_image_results(json_data, entry_id: int, logger=None) -> pd.DataF
         logger.error(f"Error processing API results for EntryID {entry_id}: {str(e)}")
         return pd.DataFrame()
 
-async def fetch_and_process_images(query: str, entry_id: int, search_type: str = "image", worker_url: str = "https://browser-worker.nik-97d.workers.dev", logger=None) -> pd.DataFrame:
+async def fetch_and_process_images(query: str, entry_id: int, search_type: str = "image", logger=None) -> pd.DataFrame:
     """Fetch image search results from Cloudflare Worker, process into a DataFrame, and send email.
     
-    This function uses the image API (Cloudflare Worker at https://browser-worker.nik-97d.workers.dev) as the default method for fetching and processing image search results.
-    Legacy HTML parsing functions (e.g., get_original_images, get_results_page_results) are retained for compatibility but should not be used for new implementations.
-    Use this API-based approach for all image search queries.
+    This function uses the image API (Cloudflare Worker at https://browser-worker.nik-97d.workers.dev) as the only method for fetching and processing image search results.
+    Legacy HTML parsing functions (e.g., get_original_images, get_results_page_results) are deprecated and should not be used.
+    All image search queries must use this API-based approach.
 
     Args:
         query (str): The search term (e.g., SKU or product name).
         entry_id (int): Unique identifier for the search entry.
         search_type (str): Type of search, defaults to "image".
-        worker_url (str): URL of the image API, defaults to Cloudflare Worker.
         logger (logging.Logger, optional): Logger instance, defaults to module-level logger.
 
     Returns:
         pd.DataFrame: DataFrame containing image URLs, descriptions, sources, and thumbnails.
     """
     logger = logger or logging.getLogger(__name__)
+    worker_url = "https://browser-worker.nik-97d.workers.dev"
     try:
         # Construct URL
         encoded_query = urllib.parse.quote_plus(query)
         url = f"{worker_url}?q={encoded_query}&searchType={search_type}&entryId={entry_id}"
-        logger.info(f"Fetching from Worker: {url}")
+        logger.info(f"Fetching from Worker for query '{query}' (EntryID {entry_id}): {url}")
 
         # Fetch JSON
         response = requests.get(url, timeout=10)
         if not response.ok:
-            logger.error(f"Failed to fetch from Worker: {response.status_code} {response.text}")
+            logger.error(f"Failed to fetch from Worker for query '{query}' (EntryID {entry_id}): {response.status_code} {response.text}")
             return pd.DataFrame()
 
         json_data = response.json()
         df = process_api_image_results(json_data, entry_id, logger)
 
-        return df
+        if not df.empty:
+            # Save DataFrame to CSV
+            file_name = f"image_results_{query}_{int(time.time())}.csv"
+            local_filename = f"/tmp/{file_name}"
+            df.to_csv(local_filename, index=False)
+            logger.info(f"Saved DataFrame for query '{query}' (EntryID {entry_id}) to {local_filename}")
 
     except Exception as e:
         logger.error(f"Error fetching/processing query '{query}' for EntryID {entry_id}: {str(e)}")
