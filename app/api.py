@@ -283,7 +283,6 @@ class SearchClient:
             results = []
 
             for region_idx, region_name in enumerate(self.regions):
-                # Select proxy for this request
                 proxy_type, proxy_config = self._select_proxy()
                 current_fetch_endpoint = f"{proxy_config['endpoint']}?region={region_name}"
                 self.logger.info(
@@ -309,7 +308,6 @@ class SearchClient:
                                     f"PID {process_info.pid}: Service temporarily unavailable (Status {response.status}) for '{term}' in region {region_name} via {proxy_type.value}."
                                 )
                                 if region_idx == len(self.regions) - 1:
-                                    # Try the other proxy as a fallback
                                     fallback_proxy_type = ProxyType.ROAMINGPROXY if proxy_type == ProxyType.DATAPROXY else ProxyType.DATAPROXY
                                     fallback_endpoint = f"{self.proxies[fallback_proxy_type]['endpoint']}?region={region_name}"
                                     self.logger.info(
@@ -335,7 +333,7 @@ class SearchClient:
                                             )
                                             continue
                                         html_bytes = html_content_from_api.encode('utf-8') if isinstance(html_content_from_api, str) else str(html_content_from_api).encode('utf-8')
-                                        formatted_results_df = fetch_and_process_images(html_bytes, entry_id, self.logger)
+                                        formatted_results_df = await fetch_and_process_images(html_bytes, entry_id, self.logger)  # Add await
                                         if not formatted_results_df.empty:
                                             results = [
                                                 {
@@ -372,7 +370,7 @@ class SearchClient:
                                 )
                                 continue
                             html_bytes = html_content_from_api.encode('utf-8') if isinstance(html_content_from_api, str) else str(html_content_from_api).encode('utf-8')
-                            formatted_results_df = fetch_and_process_images(html_bytes, entry_id, self.logger)
+                            formatted_results_df = await fetch_and_process_images(html_bytes, entry_id, self.logger)  # Add await
                             if not formatted_results_df.empty:
                                 self.logger.info(
                                     f"PID {process_info.pid}: Successfully found {len(formatted_results_df)} results for term='{term}' "
@@ -389,7 +387,9 @@ class SearchClient:
                                     for _, row_data in formatted_results_df.iterrows()
                                 ]
                             else:
-                                self.logger.warning(f"PID {process_info.pid}: `fetch_and_process_images` returned empty for term='{term}' in region {region_name} via {proxy_type.value}.")
+                                self.logger.warning(
+                                    f"PID {process_info.pid}: `fetch_and_process_images` returned empty for term='{term}' in region {region_name} via {proxy_type.value}."
+                                )
                 except asyncio.TimeoutError:
                     self.logger.warning(f"PID {process_info.pid}: Request timeout for term='{term}' in region {region_name} via {proxy_type.value}.")
                     if region_idx == len(self.regions) - 1:
@@ -407,14 +407,14 @@ class SearchClient:
             )
             return []
 def _create_placeholder_result(entry_id: int, type_suffix: str, description: str) -> Dict:
-    return {
-        "EntryID": entry_id,
-        "ImageUrl": f"placeholder://{type_suffix}",
-        "ImageDesc": description,
-        "ImageSource": "placeholder://N/A", # Placeholder for HttpUrl
-        "ImageUrlThumbnail": f"placeholder://{type_suffix}-thumb",
-        "ProductCategory": ""
-    }
+        return {
+            "EntryID": entry_id,
+            "ImageUrl": f"placeholder://{type_suffix}",
+            "ImageDesc": description,
+            "ImageSource": "placeholder://N/A", # Placeholder for HttpUrl
+            "ImageUrlThumbnail": f"placeholder://{type_suffix}-thumb",
+            "ProductCategory": ""
+        }
 
 async def orchestrate_entry_search(
     original_search_term: str,
