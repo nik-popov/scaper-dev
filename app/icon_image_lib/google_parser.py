@@ -10,7 +10,6 @@ import asyncio
 import time
 import os
 from .LR import LR  # Assuming LR is in icon_image_lib
-from app.email_utils import send_email  # Assuming send_email is defined in email_utils
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -340,23 +339,6 @@ async def fetch_and_process_images(query: str, entry_id: int, search_type: str =
             local_filename = f"/tmp/{file_name}"
             df.to_csv(local_filename, index=False)
             logger.info(f"Saved DataFrame to {local_filename}")
-
-            # Send email (assuming send_email is defined elsewhere)
-            try:
-                file_id = entry_id
-                success = await send_email(
-                    to_emails='nik@iconluxurygroup.com',
-                    subject=f'MSRP File Processed: {file_name}',
-                    file_path=local_filename,
-                    job_id=file_id
-                )
-                if success:
-                    logger.info(f"Email sent successfully for job ID {file_id}")
-                else:
-                    logger.error(f"Failed to send email for job ID {file_id}")
-            except ImportError:
-                logger.error("Failed to import send_email. Ensure it is defined in your project.")
-                return df
 
         return df
 
