@@ -10,7 +10,7 @@ import asyncio
 import time
 import os
 from .LR import LR  # Assuming LR is in icon_image_lib
-
+from app.email_utils import send_email  # Adjust import based on your project structure
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -268,7 +268,6 @@ async def fetch_and_process_images(query: str, entry_id: int, search_type: str =
 
             # Send email (assuming send_email is imported elsewhere)
             file_id = entry_id
-            from send_email import send_email  # Adjust import based on your project structure
             success = await send_email(
                 to_emails='nik@iconluxurygroup.com',
                 subject=f'MSRP File Processed: {file_name}',
