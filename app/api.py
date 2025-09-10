@@ -269,7 +269,7 @@ class SearchClient:
             return ProxyType.DATAPROXY, self.proxies[ProxyType.DATAPROXY]
 
     @retry(
-        stop=stop_after_attempt(1),
+        stop=stop_after_attempt(2),
         wait=wait_exponential(multiplier=1, min=2, max=10),
         retry=retry_if_exception_type((aiohttp.ClientError, json.JSONDecodeError, asyncio.TimeoutError)),
         before_sleep=before_sleep_log(default_logger, logging.WARNING)
@@ -1308,7 +1308,7 @@ async def api_populate_results_from_warehouse(
         # Batch configuration (aligned with process_restart_batch)
         BATCH_SIZE_PER_GATHER = 20
         MAX_CONCURRENT_ENTRY_PROCESSING = 5
-        MAX_ENTRY_ATTEMPTS = 3
+        MAX_ENTRY_ATTEMPTS = 1
 
         # Define read_db_one_entry (from Jupyter notebook)
         async def read_db_one_entry(file_id: str) -> dict:
