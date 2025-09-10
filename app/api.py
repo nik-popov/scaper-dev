@@ -269,7 +269,7 @@ class SearchClient:
             return ProxyType.DATAPROXY, self.proxies[ProxyType.DATAPROXY]
 
     @retry(
-        stop=stop_after_attempt(2),
+        stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=10),
         retry=retry_if_exception_type((aiohttp.ClientError, json.JSONDecodeError, asyncio.TimeoutError)),
         before_sleep=before_sleep_log(default_logger, logging.WARNING)
