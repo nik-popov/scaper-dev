@@ -904,7 +904,7 @@ async def process_restart_batch(
 
     BATCH_SIZE_PER_GATHER = max(1, min(20, num_workers * 2))
     MAX_CONCURRENT_ENTRY_PROCESSING = max(num_workers, 5)
-    MAX_ENTRY_ATTEMPTS = 3
+    MAX_ENTRY_ATTEMPTS = 1
     configured_search_endpoint = SEARCH_PROXY_API_URL
 
     logger.debug(
