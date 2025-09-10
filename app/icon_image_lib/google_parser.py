@@ -321,6 +321,10 @@ import logging
 import requests
 import pandas as pd
 
+import logging
+import requests
+import pandas as pd
+
 async def fetch_and_process_images(
     query: str,
     entry_id: int,
@@ -334,25 +338,28 @@ async def fetch_and_process_images(
         logger.setLevel(logging.INFO)
     
     try:
-        # Remove trailing comma and slash for valid URL string
         worker_url: str = "https://browser-worker.nik-97d.workers.dev"
-        payload = {
+        params = {
             "q": query.strip('"'),  # Remove quotes if present
             "searchType": search_type,
-            "entryId": entry_id
+            "entryId": str(entry_id)  # Convert to string for query params
         }
-        logger.info(f"Posting to Worker: {worker_url} with payload: {payload}")
+        if brand:
+            params["brand"] = brand  # Include brand if provided
+        logger.info(f"GET request to Worker: {worker_url} with params: {params}")
         
-        # Use POST instead of GET to match log behavior
-        response = requests.post(worker_url, json=payload, timeout=10)
-        response.raise_for_status()  # Raise exception for non-2xx status codes
+        response = requests.get(worker_url, params=params, timeout=10)
+        response.raise_for_status()  # Raise for non-2xx status codes
         
         json_data = response.json()
         df = process_api_image_results(json_data, entry_id, logger)
         return df
     
+    except requests.exceptions.HTTPError as e:
+        logger.error(f"HTTP error fetching query '{query}': {response.status_code} {response.text[:500]}")
+        return pd.DataFrame()
     except requests.exceptions.RequestException as e:
-        logger.error(f"Error fetching/processing query '{query}': {str(e)}")
+        logger.error(f"Network error fetching query '{query}': {str(e)}")
         return pd.DataFrame()
     except ValueError as e:
         logger.error(f"Error parsing JSON response for query '{query}': {str(e)}")
