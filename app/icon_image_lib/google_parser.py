@@ -10,7 +10,7 @@ import asyncio
 import time
 import os
 from .LR import LR  # Assuming LR is in icon_image_lib
-
+from app.email_utils import send_email  # Assuming send_email is defined in email_utils
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -254,7 +254,7 @@ def process_search_result(image_html_bytes: bytes, entry_id: int, logger=None) -
         logger.info(f"Processed EntryID {entry_id} with {len(df)} images.")
         return df
     except Exception as e:
-        logger.error(f"Error fetching/processing query '{query}': {str(e)}")
+        logger.error(f"Error fetching/processing query '{entry_id}': {str(e)}")
         return pd.DataFrame()    
 def process_api_image_results(json_data, entry_id: int, logger=None) -> pd.DataFrame:
     """Process JSON from Google Custom Search API into a DataFrame."""
@@ -314,7 +314,7 @@ def process_api_image_results(json_data, entry_id: int, logger=None) -> pd.DataF
         logger.info(f"Processed EntryID {entry_id} with {len(df)} images.")
         return df
     except Exception as e:
-        logger.error(f"Error fetching/processing query '{query}': {str(e)}")
+        logger.error(f"Error fetching/processing query '{entry_id}': {str(e)}")
         return pd.DataFrame()
 async def fetch_and_process_images(query: str, entry_id: int, search_type: str = "image", worker_url: str = "https://browser-worker.nik-97d.workers.dev") -> pd.DataFrame:
     """Fetch image search results from Cloudflare Worker, process into a DataFrame, and send email."""
