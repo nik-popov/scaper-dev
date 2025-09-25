@@ -428,7 +428,7 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
         row_data_map = {item['ExcelRowID']: item for item in image_data}
         last_non_empty_row = get_last_non_empty_row(ws, column='B', header_row=header_row, logger_instance=logger_instance)
 
-        # Log ExcelRowID range
+        # Adjust row range based on data and template
         if image_data:
             min_row_id = min(item['ExcelRowID'] for item in image_data)
             max_row_id = max(item['ExcelRowID'] for item in image_data)
@@ -439,8 +439,13 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
             max_row_id = last_non_empty_row - header_row if last_non_empty_row > header_row else 1
             logger_instance.warning(f"No data in image_data, setting range based on template last row {last_non_empty_row}")
 
+        # Calculate shift to map min_row_id to desired_start_row = 2
+        desired_start_row = 2
+        shift = desired_start_row - min_row_id
+        logger_instance.info(f"Calculated shift: {shift} to map min_row_id {min_row_id} to row {desired_start_row}")
+
         # Ensure enough rows
-        max_needed_row = max_row_id + row_offset
+        max_needed_row = max_row_id + shift + row_offset
         if max_needed_row < 1:
             logger_instance.error(f"max_needed_row {max_needed_row} is less than 1. Aborting.")
             raise ValueError("Invalid row range: max_needed_row is less than 1")
@@ -457,14 +462,14 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
         PADDING_POINTS = 5
 
         for row_id in range(min_row_id, max_row_id + 1):
-            row_num = row_id + row_offset  # Treat row_id as 1-based, mapping directly to Excel row
+            row_num = row_id + shift + row_offset  # Apply shift to remap rows
             if row_num < 1:
-                logger_instance.error(f"Invalid row_num {row_num} for row_id={row_id}, row_offset={row_offset}. Skipping.")
+                logger_instance.error(f"Invalid row_num {row_num} for row_id={row_id}, shift={shift}, row_offset={row_offset}. Skipping.")
                 continue
             if row_num <= header_row:
                 logger_instance.warning(f"row_num {row_num} overlaps with header_row {header_row} for row_id={row_id}. Proceeding with caution.")
 
-            logger_instance.info(f"Processing row_id={row_id}, writing to Excel row {row_num + 1} (row_num={row_num}, row_offset={row_offset})")
+            logger_instance.info(f"Processing row_id={row_id}, writing to Excel row {row_num} (row_num={row_num}, shift={shift}, row_offset={row_offset})")
             ws.row_dimensions[row_num].height = CELL_HEIGHT_POINTS
 
             if row_id in row_data_map:
@@ -500,7 +505,7 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                         img.anchor = anchor
                         ws.add_image(img)
                         logger_instance.info(
-                            f"Added image for Row {row_id} at Excel row {row_num + 1}, "
+                            f"Added image for Row {row_id} at Excel row {row_num}, "
                             f"height={CELL_HEIGHT_POINTS} points, width={ws.column_dimensions['A'].width:.2f} points"
                         )
                     else:
@@ -514,18 +519,18 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                     ws[f"D{row_num}"] = item.get('Style', '')
                     ws[f"E{row_num}"] = item.get('Color', '')
                     ws[f"H{row_num}"] = item.get('Category', '')
-                    logger_instance.info(f"Wrote metadata for Row {row_id} at Excel row {row_num + 1}")
+                    logger_instance.info(f"Wrote metadata for Row {row_id} at Excel row {row_num}")
                 else:
-                    logger_instance.warning(f"Skipping metadata write for row {row_num + 1} as it overlaps with header row")
+                    logger_instance.warning(f"Skipping metadata write for row {row_num} as it is the header row")
             else:
                 if row_num > header_row:
                     ws[f"B{row_num}"] = ''
                     ws[f"D{row_num}"] = ''
                     ws[f"E{row_num}"] = ''
                     ws[f"H{row_num}"] = ''
-                    logger_instance.info(f"Filled missing row {row_num + 1} (ExcelRowID {row_id}) with empty metadata")
+                    logger_instance.info(f"Filled missing row {row_num} (ExcelRowID {row_id}) with empty metadata")
                 else:
-                    logger_instance.info(f"Skipping row {row_num + 1} (ExcelRowID {row_id}) as it overlaps with header row")
+                    logger_instance.info(f"Skipping row {row_num} (ExcelRowID {row_id}) as it is the header row")
 
         # Clean up extra rows
         if ws.max_row > max_needed_row:
@@ -585,7 +590,6 @@ def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict],
         row_data_map = {item['ExcelRowID']: item for item in image_data}
         last_non_empty_row = get_last_non_empty_row(ws, column='B', header_row=header_row, logger_instance=logger_instance)
 
-        # Log ExcelRowID range
         if image_data:
             min_row_id = min(item['ExcelRowID'] for item in image_data)
             max_row_id = max(item['ExcelRowID'] for item in image_data)
@@ -596,7 +600,12 @@ def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict],
             max_row_id = last_non_empty_row - header_row if last_non_empty_row > header_row else 1
             logger_instance.warning(f"No data in image_data, setting range based on template last row {last_non_empty_row}")
 
-        max_needed_row = max_row_id + row_offset
+        # Calculate shift to map min_row_id to desired_start_row = 2
+        desired_start_row = 2
+        shift = desired_start_row - min_row_id
+        logger_instance.info(f"Calculated shift: {shift} to map min_row_id {min_row_id} to row {desired_start_row}")
+
+        max_needed_row = max_row_id + shift + row_offset
         if max_needed_row < 1:
             logger_instance.error(f"max_needed_row {max_needed_row} is less than 1. Aborting.")
             raise ValueError("Invalid row range: max_needed_row is less than 1")
@@ -608,14 +617,14 @@ def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict],
                 ws.row_dimensions[row_num].height = DEFAULT_ROW_HEIGHT_POINTS
 
         for row_id in range(min_row_id, max_row_id + 1):
-            row_num = row_id + row_offset  # Treat row_id as 1-based, mapping directly to Excel row
+            row_num = row_id + shift + row_offset  # Apply shift to remap rows
             if row_num < 1:
-                logger_instance.error(f"Invalid row_num {row_num} for row_id={row_id}, row_offset={row_offset}. Skipping.")
+                logger_instance.error(f"Invalid row_num {row_num} for row_id={row_id}, shift={shift}, row_offset={row_offset}. Skipping.")
                 continue
             if row_num <= header_row:
                 logger_instance.warning(f"row_num {row_num} overlaps with header_row {header_row} for row_id={row_id}. Proceeding with caution.")
 
-            logger_instance.info(f"Processing row_id={row_id}, writing to Excel row {row_num + 1} (row_num={row_num}, row_offset={row_offset})")
+            logger_instance.info(f"Processing row_id={row_id}, writing to Excel row {row_num} (row_num={row_num}, shift={shift}, row_offset={row_offset})")
             ws.row_dimensions[row_num].height = DEFAULT_ROW_HEIGHT_POINTS
 
             if row_id in row_data_map:
@@ -629,7 +638,7 @@ def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict],
                         img_height_pixels = img.height if hasattr(img, 'height') else 0
                         img_height_points = img_height_pixels * 72 / 96
                         ws.row_dimensions[row_num].height = max(DEFAULT_ROW_HEIGHT_POINTS, img_height_points)
-                        logger_instance.info(f"Added image for Row {row_id} at Excel row {row_num + 1}, height set to {ws.row_dimensions[row_num].height} points")
+                        logger_instance.info(f"Added image for Row {row_id} at Excel row {row_num}, height set to {ws.row_dimensions[row_num].height} points")
                     else:
                         logger_instance.warning(f"Image processing failed for Row {row_id}, writing MSRP only")
                 else:
@@ -637,10 +646,10 @@ def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict],
 
                 msrp_value = item.get('MSRP', '')
                 ws.cell(row=row_num, column=column_index_from_string(target_column)).value = msrp_value
-                logger_instance.info(f"Wrote MSRP '{msrp_value}' for Row {row_id} at {target_column}{row_num + 1}")
+                logger_instance.info(f"Wrote MSRP '{msrp_value}' for Row {row_id} at {target_column}{row_num}")
             else:
                 ws.cell(row=row_num, column=column_index_from_string(target_column)).value = ''
-                logger_instance.info(f"Filled missing row {row_num + 1} (ExcelRowID {row_id}) with empty MSRP")
+                logger_instance.info(f"Filled missing row {row_num} (ExcelRowID {row_id}) with empty MSRP")
 
         if ws.max_row > max_needed_row:
             logger_instance.info(f"Deleting {ws.max_row - max_needed_row} rows after row {max_needed_row}")
@@ -660,6 +669,7 @@ def write_excel_generic(local_filename: str, temp_dir: str, header_row: int, row
         ws = wb.active
         image_map = {int(Path(f).stem): f for f in os.listdir(temp_dir) if Path(f).stem.isdigit()}
 
+        # For generic, assume similar remapping if needed, but since issue is for DISTRO, keep as is
         for row_id, image_file in image_map.items():
             image_path = os.path.join(temp_dir, image_file)
             if verify_and_process_image(image_path, logger_instance):
@@ -705,7 +715,7 @@ async def generate_download_file(file_id: str, row_offset: int = 0):
                 logger_instance.error(f"No records found for FileID {file_id}. The job cannot proceed.")
                 return
 
-        logger_instance.info("Grouping data by product to prepare for download attempts...")
+        logger_instance.info(f"ExcelRowID values: {list(images_df['ExcelRowID'])}")
         grouped_data = []
         for _, group in images_df.groupby('ExcelRowID'):
             first_row = group.iloc[0]
@@ -804,7 +814,7 @@ async def generate_msrp_excel(file_id: str, target_column: str, row_offset: int 
                 logger_instance.error(f"No records found for FileID {file_id}. The job cannot proceed.")
                 return
 
-        logger_instance.info("Grouping data by product to prepare for download attempts...")
+        logger_instance.info(f"ExcelRowID values: {list(images_df['ExcelRowID'])}")
         grouped_data = []
         for _, group in images_df.groupby('ExcelRowID'):
             first_row = group.iloc[0]
