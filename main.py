@@ -19,7 +19,7 @@ from openpyxl import load_workbook
 from openpyxl.drawing.image import Image
 from openpyxl.utils import column_index_from_string
 from PIL import Image as PILImage
-from PIL import UnidentifiedImageError
+from PIL import UnidentifiedImageError, ImageOps
 from tldextract import tldextract
 import urllib.parse
 from pathlib import Path
@@ -255,9 +255,13 @@ async def download_all_images(data: List[Dict], save_path: str, logger_instance:
 def resize_image(image_path: str, logger_instance: logging.Logger) -> bool:
     try:
         img = PILImage.open(image_path)
+        img.load()
+
+        # Handle mode conversion in memory
         if img.mode == 'RGBA':
             background = PILImage.new('RGB', img.size, (255, 255, 255))
-            background.paste(img, mask=img.split()[3]); img = background
+            background.paste(img, mask=img.split()[3])
+            img = background
         elif img.mode != 'RGB':
             img = img.convert('RGB')
         
@@ -267,13 +271,15 @@ def resize_image(image_path: str, logger_instance: logging.Logger) -> bool:
         most_common = colors[counts.argmax()]
         if np.sum(most_common) < 700:
             mask = np.all(np.abs(pixels - most_common) <= 15, axis=2)
-            pixels[mask] = [255, 255, 255]
+            pixels[mask] = np.array([255, 255, 255])
             img = PILImage.fromarray(pixels)
 
-        h, w = img.size
-        if h > MAX_IMAGE_DIMENSION or w > MAX_IMAGE_DIMENSION:
+        # Thumbnail in memory
+        width, height = img.size
+        if height > MAX_IMAGE_DIMENSION or width > MAX_IMAGE_DIMENSION:
             img.thumbnail((MAX_IMAGE_DIMENSION, MAX_IMAGE_DIMENSION))
 
+        # Save once at the end
         img.save(image_path, 'PNG')
         return True
     except Exception as e:
@@ -291,12 +297,16 @@ def get_last_non_empty_row(ws, column: str, header_row: int, logger_instance: lo
 
 def verify_and_process_image(image_path: str, logger_instance: logging.Logger) -> bool:
     try:
-        with PILImage.open(image_path) as img: img.verify()
+        with PILImage.open(image_path) as img:
+            img.verify()
         if os.path.getsize(image_path) < MAX_IMAGE_VERIFY_SIZE:
-            logger_instance.warning(f"File may be too small: {image_path}"); return False
+            logger_instance.warning(f"File may be too small: {image_path}")
+            return False
         return resize_image(image_path, logger_instance)
     except Exception:
-        logger_instance.error(f"Image verification failed for {image_path}", exc_info=True); return False
+        logger_instance.error(f"Image verification failed for {image_path}", exc_info=True)
+        return False
+
 from openpyxl.drawing.spreadsheet_drawing import TwoCellAnchor, AnchorMarker
 from openpyxl.drawing.xdr import XDRPositiveSize2D
 from openpyxl.utils.units import pixels_to_EMU, points_to_pixels
@@ -311,7 +321,7 @@ from openpyxl.drawing.spreadsheet_drawing import TwoCellAnchor, AnchorMarker
 from openpyxl.drawing.xdr import XDRPositiveSize2D
 from openpyxl.utils.units import pixels_to_EMU, points_to_pixels
 
-def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, logger_instance: logging.Logger):
+def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, row_offset: int = 0, logger_instance: logging.Logger):
     """
     Write image and metadata to the Excel file for DISTRO type, with cropping to remove uniform lines
     and scaling to fit cell width with centering.
@@ -321,6 +331,7 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
         temp_dir (str): Directory containing images.
         image_data (List[Dict]): List of dictionaries with image and metadata.
         header_row (int): Row index of the header in the Excel file.
+        row_offset (int): Additional row offset for alignment.
         logger_instance (logging.Logger): Logger for tracking operations.
     """
     def get_valid_indices_with_padding(valid_indices, max_index, pad=10):
@@ -332,18 +343,15 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
             padded.update(range(start, end))
         return sorted(padded)
 
-    def process_image_remove_lines(image_path: str, logger_instance: logging.Logger) -> Optional[PILImage.Image]:
-        """Process image to remove uniform horizontal and vertical lines with padding, returning original if no cropping needed or if cropping results in too small image."""
+    def process_image_remove_lines(image_path: str, img: PILImage.Image, logger_instance: logging.Logger) -> PILImage.Image:
+        """Process image in memory to remove uniform horizontal and vertical lines with padding, returning processed image."""
         try:
-            with PILImage.open(image_path) as img:
-                img.verify()  # Verify image integrity before processing
-            img = PILImage.open(image_path)
-            img = ImageOps.exif_transpose(img)  # Handle EXIF orientation
-            img = img.convert('RGB')  # Convert to RGB to avoid RGBA issues
-            arr = np.array(img)  # Shape: (height, width, 3)
+            img = ImageOps.exif_transpose(img.copy())
+            img = img.convert('RGB')
+            arr = np.array(img)
             original_height, original_width, _ = arr.shape
 
-            # Step 1: Detect non-uniform horizontal lines with tolerance
+            # Step 1: Detect non-uniform horizontal rows with tolerance
             valid_row_indices = []
             for y in range(original_height):
                 row_max_min_diff = np.max(arr[y], axis=0) - np.min(arr[y], axis=0)
@@ -353,25 +361,31 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
             if valid_row_indices:
                 rows_to_keep = get_valid_indices_with_padding(valid_row_indices, original_height - 1, pad=10)
                 row_cropped = len(rows_to_keep) != original_height
-                arr = arr[rows_to_keep, :, :]
-                logger_instance.info(f"Kept {len(rows_to_keep)} of {original_height} rows (with padding) for {image_path}")
+                if row_cropped:
+                    arr = arr[rows_to_keep]
+                    logger_instance.info(f"Kept {len(rows_to_keep)} of {original_height} rows (with padding) for {image_path}")
             else:
                 logger_instance.warning(f"No non-uniform rows found in image: {image_path}")
 
-            # Step 2: Detect non-uniform vertical lines with tolerance
-            arr_T = arr.transpose(1, 0, 2)
-            new_width = arr_T.shape[0]
+            # Step 2: Detect non-uniform vertical columns with tolerance
+            arr_t = np.transpose(arr, (1, 0, 2))
+            new_width = arr_t.shape[0]
             valid_col_indices = []
             for x in range(new_width):
-                col_max_min_diff = np.max(arr_T[x], axis=0) - np.min(arr_T[x], axis=0)
+                col_max_min_diff = np.max(arr_t[x], axis=0) - np.min(arr_t[x], axis=0)
                 if np.any(col_max_min_diff >= 10):  # Tolerance for uniformity
                     valid_col_indices.append(x)
             col_cropped = False
             if valid_col_indices:
                 cols_to_keep = get_valid_indices_with_padding(valid_col_indices, new_width - 1, pad=10)
                 col_cropped = len(cols_to_keep) != new_width
-                arr_cleaned = arr_T[cols_to_keep, :, :].transpose(1, 0, 2)
-                logger_instance.info(f"Kept {len(cols_to_keep)} of {new_width} columns (with padding) for {image_path}")
+                if col_cropped:
+                    arr_t = arr_t[cols_to_keep]
+                    arr_cleaned = np.transpose(arr_t, (1, 0, 2))
+                    logger_instance.info(f"Kept {len(cols_to_keep)} of {new_width} columns (with padding) for {image_path}")
+                else:
+                    arr_cleaned = arr
+                    logger_instance.info(f"No column cropping for {image_path}")
             else:
                 arr_cleaned = arr
                 logger_instance.info(f"No non-uniform columns found in image: {image_path}")
@@ -379,60 +393,58 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
             cleaned_height, cleaned_width, _ = arr_cleaned.shape
             min_dim = 50
             if (row_cropped or col_cropped) and (cleaned_height < min_dim or cleaned_width < min_dim):
-                logger_instance.warning(f"Cropping resulted in too small image ({cleaned_height}x{cleaned_width}) for {image_path}. Returning original.")
+                logger_instance.warning(f"Cropping resulted in too small image ({cleaned_height}x{cleaned_width}) for {image_path}. Using original.")
                 return img  # Return original if cropped too small
 
             if not row_cropped and not col_cropped:
-                logger_instance.info(f"No cropping occurred for {image_path}. Returning original.")
+                logger_instance.info(f"No cropping occurred for {image_path}. Using original.")
                 return img  # Return original if no cropping was needed
 
             return PILImage.fromarray(arr_cleaned.astype(np.uint8))
         except Exception as e:
             logger_instance.error(f"Error processing image {image_path} to remove lines: {e}", exc_info=True)
-            return None
+            return img  # Fallback to original on error
 
     def verify_and_process_image(image_path: str, logger_instance: logging.Logger) -> bool:
-        """Verify, crop, and process image to meet size and format requirements."""
+        """Verify, crop, and process image to meet size and format requirements in memory."""
         try:
-            img = PILImage.open(image_path)
-            img.load()  # Fully load the image to catch decoding errors
-            if os.path.getsize(image_path) < 1000:  # Use MIN_IMAGE_SIZE for consistency
+            # Verify original file
+            with PILImage.open(image_path) as temp_img:
+                temp_img.verify()
+            if os.path.getsize(image_path) < MIN_IMAGE_SIZE:
                 logger_instance.warning(f"File too small: {image_path}")
                 return False
 
-            # Crop image to remove uniform lines
-            processed_img = process_image_remove_lines(image_path, logger_instance)
-            if not processed_img:
-                logger_instance.warning(f"Failed to crop image: {image_path}")
-                return False
+            # Load original
+            img = PILImage.open(image_path)
+            img.load()
 
-            # Convert to RGB and handle backgrounds
-            if processed_img.mode == 'RGBA':
-                background = PILImage.new('RGB', processed_img.size, (255, 255, 255))
-                background.paste(processed_img, mask=processed_img.split()[3])
-                processed_img = background
-            elif processed_img.mode != 'RGB':
-                processed_img = processed_img.convert('RGB')
+            # Crop in memory
+            processed_img = process_image_remove_lines(image_path, img, logger_instance)
 
-            # Remove near-uniform borders (e.g., white or near-white)
+            # Border removal
             pixels = np.array(processed_img)
             border_pixels = np.concatenate([pixels[0, :], pixels[-1, :], pixels[:, 0], pixels[:, -1]])
             colors, counts = np.unique(border_pixels, axis=0, return_counts=True)
             most_common = colors[counts.argmax()]
-            if np.sum(most_common) > 700:  # Check if border is light (close to white)
+            if np.sum(most_common) > 700:  # Light border
                 mask = np.all(np.abs(pixels - most_common) <= 15, axis=2)
-                pixels[mask] = [255, 255, 255]  # Set to pure white
-                processed_img = PILImage.fromarray(pixels)
+                pixels[mask] = np.array([255, 255, 255])
+            # Always recreate from pixels after possible modification
+            processed_img = PILImage.fromarray(pixels)
+
+            # Ensure RGB (should already be)
+            if processed_img.mode != 'RGB':
+                processed_img = processed_img.convert('RGB')
 
             # Resize if dimensions exceed MAX_IMAGE_DIMENSION
-            w, h = processed_img.size  # Note: size is (width, height)
-            MAX_IMAGE_DIMENSION = 130
+            w, h = processed_img.size
             if h > MAX_IMAGE_DIMENSION or w > MAX_IMAGE_DIMENSION:
                 processed_img.thumbnail((MAX_IMAGE_DIMENSION, MAX_IMAGE_DIMENSION), PILImage.Resampling.LANCZOS)
                 logger_instance.info(f"Resized image {image_path} to fit max dimension {MAX_IMAGE_DIMENSION}")
 
-            # Save processed image back to the original path
-            processed_img.save(image_path, 'PNG', quality=95)  # High quality to prevent corruption
+            # Save processed image back to original path once
+            processed_img.save(image_path, 'PNG')
             logger_instance.info(f"Image verified, cropped, and processed: {image_path}")
             return True
         except Exception as e:
@@ -470,7 +482,7 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
             max_row_id = last_non_empty_row - header_row if last_non_empty_row > header_row else 1
             logger_instance.warning(f"No data in image_data, setting range based on template last row {last_non_empty_row}")
 
-        max_needed_row = max_row_id + header_row
+        max_needed_row = max_row_id + header_row + row_offset
         if ws.max_row < max_needed_row:
             logger_instance.info(f"Appending {max_needed_row - ws.max_row} rows to worksheet")
             for row_num in range(ws.max_row + 1, max_needed_row + 1):
@@ -483,7 +495,7 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
         PADDING_POINTS = 5  # Padding for even margins on both sides
 
         for row_id in range(min_row_id, max_row_id + 1):
-            row_num = row_id + header_row
+            row_num = row_id + header_row + row_offset
             ws.row_dimensions[row_num].height = CELL_HEIGHT_POINTS
 
             if row_id in row_data_map:
@@ -559,9 +571,9 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                 else:
                     logger_instance.info(f"Skipping row {row_num} (ExcelRowID {row_id}) as it is the header row")
 
-        if ws.max_row > max_row_id + header_row:
-            logger_instance.info(f"Deleting {ws.max_row - (max_row_id + header_row)} rows after row {max_row_id + header_row}")
-            ws.delete_rows(max_row_id + header_row + 1, ws.max_row - (max_row_id + header_row))
+        if ws.max_row > max_row_id + header_row + row_offset:
+            logger_instance.info(f"Deleting {ws.max_row - (max_row_id + header_row + row_offset)} rows after row {max_row_id + header_row + row_offset}")
+            ws.delete_rows(max_row_id + header_row + row_offset + 1, ws.max_row - (max_row_id + header_row + row_offset))
 
         logger_instance.info("Setting worksheet view to A1.")
         wb.save(local_filename)
@@ -570,6 +582,7 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
     except Exception as e:
         logger_instance.error(f"Error writing to DISTRO Excel file: {e}", exc_info=True)
         raise
+
 def find_header_row_index(excel_file: str, logger_instance: logging.Logger) -> Optional[int]:
     try:
         wb = load_workbook(excel_file, read_only=True); ws = wb.active
@@ -675,6 +688,7 @@ def write_excel_generic(local_filename: str, temp_dir: str, header_row: int, row
     except Exception as e:
         logger_instance.error(f"Error writing to generic Excel file: {e}", exc_info=True)
         raise
+
 # --- Main Background Task ---
 async def generate_download_file(file_id: str, row_offset: int = 0):
     timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
@@ -742,7 +756,7 @@ async def generate_download_file(file_id: str, row_offset: int = 0):
             res = requests.get(template_url, timeout=60); res.raise_for_status()
             with open(local_filename, "wb") as f: f.write(res.content)
             
-            write_excel_distro(local_filename, temp_images_dir, grouped_data, header_row, logger_instance)
+            write_excel_distro(local_filename, temp_images_dir, grouped_data, header_row, row_offset, logger_instance)
         else:
             logger_instance.info("Starting GENERIC file generation.")
             file_name = os.path.basename(urllib.parse.unquote(file_url))
