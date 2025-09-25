@@ -712,7 +712,7 @@ async def generate_download_file(file_id: str, row_offset: int = 0):
             template_url = "https://iconluxury.shop/documents/public_ICON_DISTRO_USD_20250617.xlsx"
             file_name = os.path.basename(urllib.parse.unquote(template_url))
             local_filename = os.path.join(temp_excel_dir, file_name)
-            header_row = 5  # Hardcoded for DISTRO (0-based)
+            header_row = 5  # Hardcoded for DISTRO (0-based), used for header protection only
 
             res = requests.get(template_url, timeout=60)
             res.raise_for_status()
