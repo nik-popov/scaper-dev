@@ -418,6 +418,9 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
         ws = wb.active
         image_map = {int(Path(f).stem): f for f in Path(temp_dir).iterdir() if f.stem.isdigit()}
 
+        # Log template details
+        logger_instance.info(f"Template file: {local_filename}, header_row: {header_row} (Excel row {header_row + 1})")
+
         # Get default row height
         DEFAULT_ROW_HEIGHT_POINTS = ws.row_dimensions.get(header_row + 1, {}).height or 12.75
         logger_instance.info(f"Using template row height: {DEFAULT_ROW_HEIGHT_POINTS} points from row {header_row + 1}")
@@ -425,7 +428,7 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
         row_data_map = {item['ExcelRowID']: item for item in image_data}
         last_non_empty_row = get_last_non_empty_row(ws, column='B', header_row=header_row, logger_instance=logger_instance)
 
-        # Adjust row range based on data and template
+        # Log ExcelRowID range
         if image_data:
             min_row_id = min(item['ExcelRowID'] for item in image_data)
             max_row_id = max(item['ExcelRowID'] for item in image_data)
@@ -437,7 +440,7 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
             logger_instance.warning(f"No data in image_data, setting range based on template last row {last_non_empty_row}")
 
         # Ensure enough rows
-        max_needed_row = (max_row_id - 1) + row_offset
+        max_needed_row = max_row_id + row_offset
         if max_needed_row < 1:
             logger_instance.error(f"max_needed_row {max_needed_row} is less than 1. Aborting.")
             raise ValueError("Invalid row range: max_needed_row is less than 1")
@@ -454,7 +457,7 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
         PADDING_POINTS = 5
 
         for row_id in range(min_row_id, max_row_id + 1):
-            row_num = (row_id - 1) + row_offset  # Treat row_id as 1-based absolute row number
+            row_num = row_id + row_offset  # Treat row_id as 1-based, mapping directly to Excel row
             if row_num < 1:
                 logger_instance.error(f"Invalid row_num {row_num} for row_id={row_id}, row_offset={row_offset}. Skipping.")
                 continue
