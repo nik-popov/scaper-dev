@@ -263,15 +263,6 @@ def resize_image(image_path: str, logger_instance: logging.Logger) -> bool:
             img = background
         elif img.mode != 'RGB':
             img = img.convert('RGB')
-        
-        pixels = np.array(img)
-        border_pixels = np.concatenate([pixels[0, :], pixels[-1, :], pixels[:, 0], pixels[:, -1]])
-        colors, counts = np.unique(border_pixels, axis=0, return_counts=True)
-        most_common = colors[counts.argmax()]
-        if np.sum(most_common) < 700:  # Dark border
-            mask = np.all(np.abs(pixels - most_common) <= 15, axis=2)
-            pixels[mask] = np.array([255, 255, 255])
-            img = PILImage.fromarray(pixels)
 
         # Resize in memory
         width, height = img.size
@@ -339,10 +330,10 @@ def process_image_remove_lines(image_path: str, img: PILImage.Image, logger_inst
         original_height, original_width, _ = arr.shape
 
         # Detect non-uniform horizontal rows
-        valid_row_indices = [y for y in range(original_height) if np.any(np.max(arr[y], axis=0) - np.min(arr[y], axis=0) >= 10)]
+        valid_row_indices = [y for y in range(original_height) if np.any(np.max(arr[y], axis=0) - np.min(arr[y], axis=0) >= 15)]
         row_cropped = False
         if valid_row_indices:
-            rows_to_keep = get_valid_indices_with_padding(valid_row_indices, original_height - 1)
+            rows_to_keep = get_valid_indices_with_padding(valid_row_indices, original_height - 1, pad=5)
             row_cropped = len(rows_to_keep) != original_height
             arr = arr[rows_to_keep]
             logger_instance.info(f"Kept {len(rows_to_keep)} of {original_height} rows for {image_path}")
@@ -352,10 +343,10 @@ def process_image_remove_lines(image_path: str, img: PILImage.Image, logger_inst
         # Detect non-uniform vertical columns
         arr_t = np.transpose(arr, (1, 0, 2))
         new_width = arr_t.shape[0]
-        valid_col_indices = [x for x in range(new_width) if np.any(np.max(arr_t[x], axis=0) - np.min(arr_t[x], axis=0) >= 10)]
+        valid_col_indices = [x for x in range(new_width) if np.any(np.max(arr_t[x], axis=0) - np.min(arr_t[x], axis=0) >= 15)]
         col_cropped = False
         if valid_col_indices:
-            cols_to_keep = get_valid_indices_with_padding(valid_col_indices, new_width - 1)
+            cols_to_keep = get_valid_indices_with_padding(valid_col_indices, new_width - 1, pad=5)
             col_cropped = len(cols_to_keep) != new_width
             arr_t = arr_t[cols_to_keep]
             arr = np.transpose(arr_t, (1, 0, 2))
@@ -370,13 +361,15 @@ def process_image_remove_lines(image_path: str, img: PILImage.Image, logger_inst
             logger_instance.warning(f"Cropped image too small ({cleaned_height}x{cleaned_width}) for {image_path}. Using original.")
             return img
 
-        # Border removal
+        # Border removal (more conservative)
         pixels = arr
-        border_pixels = np.concatenate([pixels[0, :], pixels[-1, :], pixels[:, 0], pixels[:, -1]])
+        border_pixels = np.concatenate([pixels[:5, :], pixels[-5:, :], pixels[:, :5], pixels[:, -5:]])  # Check 5-pixel border
         colors, counts = np.unique(border_pixels, axis=0, return_counts=True)
         most_common = colors[counts.argmax()]
-        if np.sum(most_common) > 700:  # Light border
-            mask = np.all(np.abs(pixels - most_common) <= 15, axis=2)
+        if np.sum(most_common) > 750:  # Very light border (closer to white)
+            mask = np.all(np.abs(pixels - most_common) <= 10, axis=2)
+            # Only apply mask to outer 5 pixels to avoid affecting content
+            mask[5:-5, 5:-5] = False
             pixels[mask] = np.array([255, 255, 255])
             arr = pixels
 
@@ -385,7 +378,7 @@ def process_image_remove_lines(image_path: str, img: PILImage.Image, logger_inst
         logger_instance.error(f"Error processing image {image_path} to remove lines: {e}", exc_info=True)
         return img
 
-def get_valid_indices_with_padding(valid_indices, max_index, pad=10):
+def get_valid_indices_with_padding(valid_indices, max_index, pad=5):
     """Identify indices with padding for non-uniform rows/columns."""
     padded = set()
     for idx in valid_indices:
@@ -398,14 +391,6 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
     """
     Write image and metadata to the Excel file for DISTRO type, with cropping to remove uniform lines
     and scaling to fit cell width with centering.
-
-    Args:
-        local_filename (str): Path to the Excel file.
-        temp_dir (str): Directory containing images.
-        image_data (List[Dict]): List of dictionaries with image and metadata.
-        header_row (int): Row index of the header in the Excel file (0-based for alignment).
-        logger_instance (logging.Logger): Logger for tracking operations.
-        row_offset (int): Additional row offset for alignment (default 0).
     """
     try:
         header_row = int(header_row)
@@ -445,7 +430,6 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
         PADDING_POINTS = 5
 
         for row_id in range(min_row_id, max_row_id + 1):
-            # Adjust row_num to account for 0-based header_row
             row_num = row_id + header_row + row_offset
             ws.row_dimensions[row_num].height = CELL_HEIGHT_POINTS
 
