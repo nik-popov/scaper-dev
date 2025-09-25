@@ -408,6 +408,12 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
     """
     try:
         header_row = int(header_row)
+        if header_row < 0:
+            logger_instance.error(f"Invalid header_row {header_row}. Setting to 0.")
+            header_row = 0
+        if row_offset < 0:
+            logger_instance.warning(f"Negative row_offset {row_offset} provided. Ensure this is intentional.")
+        
         wb = load_workbook(local_filename)
         ws = wb.active
         image_map = {int(Path(f).stem): f for f in Path(temp_dir).iterdir() if f.stem.isdigit()}
@@ -431,7 +437,11 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
             logger_instance.warning(f"No data in image_data, setting range based on template last row {last_non_empty_row}")
 
         # Ensure enough rows
-        max_needed_row = max_row_id + header_row + row_offset
+        max_needed_row = header_row + max_row_id + row_offset
+        if max_needed_row <= header_row:
+            logger_instance.error(f"max_needed_row {max_needed_row} is less than or equal to header_row {header_row}. Aborting.")
+            raise ValueError("Invalid row range: max_needed_row is less than or equal to header_row")
+        
         if ws.max_row < max_needed_row:
             logger_instance.info(f"Appending {max_needed_row - ws.max_row} rows to worksheet")
             for row_num in range(ws.max_row + 1, max_needed_row + 1):
@@ -444,7 +454,15 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
         PADDING_POINTS = 5
 
         for row_id in range(min_row_id, max_row_id + 1):
-            row_num = row_id + header_row + row_offset
+            row_num = header_row + row_id + row_offset  # Adjusted to start data at header_row + 1
+            if row_num <= header_row:
+                logger_instance.error(f"Invalid row_num {row_num} for row_id={row_id}, header_row={header_row}, row_offset={row_offset}. Skipping.")
+                continue
+            if row_num < 1:
+                logger_instance.error(f"Negative row_num {row_num} for row_id={row_id}. Skipping.")
+                continue
+
+            logger_instance.info(f"Processing row_id={row_id}, writing to Excel row {row_num} (header_row={header_row}, row_offset={row_offset})")
             ws.row_dimensions[row_num].height = CELL_HEIGHT_POINTS
 
             if row_id in row_data_map:
