@@ -569,6 +569,15 @@ def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict],
             raise ValueError(f"Invalid target_column: {target_column}. Must be a valid Excel column letter (e.g., 'A', 'B', 'AA').")
 
         header_row = int(header_row)
+        if header_row < 0:
+            logger_instance.error(f"Invalid header_row {header_row}. Setting to 0.")
+            header_row = 0
+        if row_offset < 0:
+            logger_instance.warning(f"Negative row_offset {row_offset} provided. Ensure this is intentional.")
+
+        # Log template details
+        logger_instance.info(f"Template file: {local_filename}, header_row: {header_row} (Excel row {header_row + 1})")
+
         row_dim = ws.row_dimensions.get(header_row + 1)
         DEFAULT_ROW_HEIGHT_POINTS = row_dim.height if row_dim and row_dim.height is not None else 12.75
         logger_instance.info(f"Using template row height: {DEFAULT_ROW_HEIGHT_POINTS} points from row {header_row + 1}")
@@ -576,6 +585,7 @@ def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict],
         row_data_map = {item['ExcelRowID']: item for item in image_data}
         last_non_empty_row = get_last_non_empty_row(ws, column='B', header_row=header_row, logger_instance=logger_instance)
 
+        # Log ExcelRowID range
         if image_data:
             min_row_id = min(item['ExcelRowID'] for item in image_data)
             max_row_id = max(item['ExcelRowID'] for item in image_data)
@@ -586,7 +596,11 @@ def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict],
             max_row_id = last_non_empty_row - header_row if last_non_empty_row > header_row else 1
             logger_instance.warning(f"No data in image_data, setting range based on template last row {last_non_empty_row}")
 
-        max_needed_row = max_row_id + header_row + row_offset
+        max_needed_row = max_row_id + row_offset
+        if max_needed_row < 1:
+            logger_instance.error(f"max_needed_row {max_needed_row} is less than 1. Aborting.")
+            raise ValueError("Invalid row range: max_needed_row is less than 1")
+
         if ws.max_row < max_needed_row:
             logger_instance.info(f"Appending {max_needed_row - ws.max_row} rows to worksheet")
             for row_num in range(ws.max_row + 1, max_needed_row + 1):
@@ -594,7 +608,14 @@ def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict],
                 ws.row_dimensions[row_num].height = DEFAULT_ROW_HEIGHT_POINTS
 
         for row_id in range(min_row_id, max_row_id + 1):
-            row_num = row_id + header_row + row_offset
+            row_num = row_id + row_offset  # Treat row_id as 1-based, mapping directly to Excel row
+            if row_num < 1:
+                logger_instance.error(f"Invalid row_num {row_num} for row_id={row_id}, row_offset={row_offset}. Skipping.")
+                continue
+            if row_num <= header_row:
+                logger_instance.warning(f"row_num {row_num} overlaps with header_row {header_row} for row_id={row_id}. Proceeding with caution.")
+
+            logger_instance.info(f"Processing row_id={row_id}, writing to Excel row {row_num + 1} (row_num={row_num}, row_offset={row_offset})")
             ws.row_dimensions[row_num].height = DEFAULT_ROW_HEIGHT_POINTS
 
             if row_id in row_data_map:
@@ -608,7 +629,7 @@ def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict],
                         img_height_pixels = img.height if hasattr(img, 'height') else 0
                         img_height_points = img_height_pixels * 72 / 96
                         ws.row_dimensions[row_num].height = max(DEFAULT_ROW_HEIGHT_POINTS, img_height_points)
-                        logger_instance.info(f"Added image for Row {row_id} at Excel row {row_num}, height set to {ws.row_dimensions[row_num].height} points")
+                        logger_instance.info(f"Added image for Row {row_id} at Excel row {row_num + 1}, height set to {ws.row_dimensions[row_num].height} points")
                     else:
                         logger_instance.warning(f"Image processing failed for Row {row_id}, writing MSRP only")
                 else:
@@ -616,10 +637,10 @@ def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict],
 
                 msrp_value = item.get('MSRP', '')
                 ws.cell(row=row_num, column=column_index_from_string(target_column)).value = msrp_value
-                logger_instance.info(f"Wrote MSRP '{msrp_value}' for Row {row_id} at {target_column}{row_num}")
+                logger_instance.info(f"Wrote MSRP '{msrp_value}' for Row {row_id} at {target_column}{row_num + 1}")
             else:
                 ws.cell(row=row_num, column=column_index_from_string(target_column)).value = ''
-                logger_instance.info(f"Filled missing row {row_num} (ExcelRowID {row_id}) with empty MSRP")
+                logger_instance.info(f"Filled missing row {row_num + 1} (ExcelRowID {row_id}) with empty MSRP")
 
         if ws.max_row > max_needed_row:
             logger_instance.info(f"Deleting {ws.max_row - max_needed_row} rows after row {max_needed_row}")
