@@ -413,7 +413,7 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
             header_row = 0
         if row_offset < 0:
             logger_instance.warning(f"Negative row_offset {row_offset} provided. Ensure this is intentional.")
-        
+
         wb = load_workbook(local_filename)
         ws = wb.active
         image_map = {int(Path(f).stem): f for f in Path(temp_dir).iterdir() if f.stem.isdigit()}
@@ -437,10 +437,10 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
             logger_instance.warning(f"No data in image_data, setting range based on template last row {last_non_empty_row}")
 
         # Ensure enough rows
-        max_needed_row = header_row + max_row_id + row_offset
-        if max_needed_row <= header_row:
-            logger_instance.error(f"max_needed_row {max_needed_row} is less than or equal to header_row {header_row}. Aborting.")
-            raise ValueError("Invalid row range: max_needed_row is less than or equal to header_row")
+        max_needed_row = (max_row_id - 1) + row_offset
+        if max_needed_row < 1:
+            logger_instance.error(f"max_needed_row {max_needed_row} is less than 1. Aborting.")
+            raise ValueError("Invalid row range: max_needed_row is less than 1")
         
         if ws.max_row < max_needed_row:
             logger_instance.info(f"Appending {max_needed_row - ws.max_row} rows to worksheet")
@@ -454,15 +454,14 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
         PADDING_POINTS = 5
 
         for row_id in range(min_row_id, max_row_id + 1):
-            row_num = header_row + row_id + row_offset  # Adjusted to start data at header_row + 1
-            if row_num <= header_row:
-                logger_instance.error(f"Invalid row_num {row_num} for row_id={row_id}, header_row={header_row}, row_offset={row_offset}. Skipping.")
-                continue
+            row_num = (row_id - 1) + row_offset  # Treat row_id as 1-based absolute row number
             if row_num < 1:
-                logger_instance.error(f"Negative row_num {row_num} for row_id={row_id}. Skipping.")
+                logger_instance.error(f"Invalid row_num {row_num} for row_id={row_id}, row_offset={row_offset}. Skipping.")
                 continue
+            if row_num <= header_row:
+                logger_instance.warning(f"row_num {row_num} overlaps with header_row {header_row} for row_id={row_id}. Proceeding with caution.")
 
-            logger_instance.info(f"Processing row_id={row_id}, writing to Excel row {row_num} (header_row={header_row}, row_offset={row_offset})")
+            logger_instance.info(f"Processing row_id={row_id}, writing to Excel row {row_num + 1} (row_num={row_num}, row_offset={row_offset})")
             ws.row_dimensions[row_num].height = CELL_HEIGHT_POINTS
 
             if row_id in row_data_map:
@@ -498,7 +497,7 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                         img.anchor = anchor
                         ws.add_image(img)
                         logger_instance.info(
-                            f"Added image for Row {row_id} at Excel row {row_num}, "
+                            f"Added image for Row {row_id} at Excel row {row_num + 1}, "
                             f"height={CELL_HEIGHT_POINTS} points, width={ws.column_dimensions['A'].width:.2f} points"
                         )
                     else:
@@ -512,18 +511,18 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                     ws[f"D{row_num}"] = item.get('Style', '')
                     ws[f"E{row_num}"] = item.get('Color', '')
                     ws[f"H{row_num}"] = item.get('Category', '')
-                    logger_instance.info(f"Wrote metadata for Row {row_id} at Excel row {row_num}")
+                    logger_instance.info(f"Wrote metadata for Row {row_id} at Excel row {row_num + 1}")
                 else:
-                    logger_instance.warning(f"Skipping metadata write for row {row_num} as it is the header row")
+                    logger_instance.warning(f"Skipping metadata write for row {row_num + 1} as it overlaps with header row")
             else:
                 if row_num > header_row:
                     ws[f"B{row_num}"] = ''
                     ws[f"D{row_num}"] = ''
                     ws[f"E{row_num}"] = ''
                     ws[f"H{row_num}"] = ''
-                    logger_instance.info(f"Filled missing row {row_num} (ExcelRowID {row_id}) with empty metadata")
+                    logger_instance.info(f"Filled missing row {row_num + 1} (ExcelRowID {row_id}) with empty metadata")
                 else:
-                    logger_instance.info(f"Skipping row {row_num} (ExcelRowID {row_id}) as it is the header row")
+                    logger_instance.info(f"Skipping row {row_num + 1} (ExcelRowID {row_id}) as it overlaps with header row")
 
         # Clean up extra rows
         if ws.max_row > max_needed_row:
