@@ -43,6 +43,7 @@ VALID_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/bmp', 'image
 MIN_IMAGE_SIZE = 1000  # Minimum content length in bytes
 MAX_IMAGE_VERIFY_SIZE = 1000  # For verification before processing
 MAX_IMAGE_DIMENSION = 130  # For resizing
+MIN_DIMENSION_FOR_BORDER = 10  # Minimum dimension to attempt border removal
 
 def get_user_agents(logger_instance: logging.Logger) -> List[str]:
     """
@@ -361,17 +362,30 @@ def process_image_remove_lines(image_path: str, img: PILImage.Image, logger_inst
             logger_instance.warning(f"Cropped image too small ({cleaned_height}x{cleaned_width}) for {image_path}. Using original.")
             return img
 
-        # Border removal (more conservative)
+        # Border removal (only if dimensions are sufficient)
         pixels = arr
-        border_pixels = np.concatenate([pixels[:5, :], pixels[-5:, :], pixels[:, :5], pixels[:, -5:]])  # Check 5-pixel border
-        colors, counts = np.unique(border_pixels, axis=0, return_counts=True)
-        most_common = colors[counts.argmax()]
-        if np.sum(most_common) > 750:  # Very light border (closer to white)
-            mask = np.all(np.abs(pixels - most_common) <= 10, axis=2)
-            # Only apply mask to outer 5 pixels to avoid affecting content
-            mask[5:-5, 5:-5] = False
-            pixels[mask] = np.array([255, 255, 255])
-            arr = pixels
+        if cleaned_height >= MIN_DIMENSION_FOR_BORDER and cleaned_width >= MIN_DIMENSION_FOR_BORDER:
+            try:
+                border_pixels = np.concatenate([
+                    pixels[:5, :],  # Top 5 rows
+                    pixels[-5:, :],  # Bottom 5 rows
+                    pixels[:, :5],   # Left 5 columns
+                    pixels[:, -5:]   # Right 5 columns
+                ])
+                colors, counts = np.unique(border_pixels, axis=0, return_counts=True)
+                most_common = colors[counts.argmax()]
+                if np.sum(most_common) > 750:  # Very light border
+                    mask = np.all(np.abs(pixels - most_common) <= 10, axis=2)
+                    mask[5:-5, 5:-5] = False  # Restrict to outer 5 pixels
+                    pixels[mask] = np.array([255, 255, 255])
+                    arr = pixels
+                    logger_instance.info(f"Applied border removal for {image_path}")
+                else:
+                    logger_instance.info(f"No light border detected for {image_path}")
+            except Exception as e:
+                logger_instance.warning(f"Border removal failed for {image_path}: {e}. Using cropped image.")
+        else:
+            logger_instance.info(f"Image too small for border removal ({cleaned_height}x{cleaned_width}) for {image_path}")
 
         return PILImage.fromarray(arr.astype(np.uint8))
     except Exception as e:
