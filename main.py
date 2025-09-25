@@ -1,4 +1,3 @@
-
 import asyncio
 import logging
 import os
@@ -43,11 +42,10 @@ MAX_THREADS = int(os.environ.get('MAX_THREADS', 10))
 VALID_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/bmp', 'image/webp', 'image/avif', 'image/tiff', 'image/x-icon']
 MIN_IMAGE_SIZE = 1000  # Minimum content length in bytes
 MAX_IMAGE_DIMENSION = 130  # For resizing
-MIN_DIMENSION_FOR_CROP = 20  # Minimum dimension to attempt cropping
-BORDER_CROP_WIDTH = 10  # Pixels to check for border on each side
-BORDER_UNIFORMITY_THRESHOLD = 0.025  # 2.5% of pixels must match dominant color
+MIN_DIMENSION_FOR_BORDER = 10  # Minimum dimension to attempt border removal
+BORDER_CROP_WIDTH = 5  # Pixels to check for border on each side
+BORDER_UNIFORMITY_THRESHOLD = 0.05  # 5% of pixels must match dominant color
 BORDER_COLOR_TOLERANCE = 10  # RGB tolerance for border color matching
-MAX_CROP_FRACTION = 0.35  # Max 35% of width/height can be cropped
 
 def get_user_agents(logger_instance: logging.Logger) -> List[str]:
     """
@@ -262,123 +260,20 @@ async def download_all_images(data: List[Dict], save_path: str, logger_instance:
         if failed_count > 0:
             logger_instance.warning(f"{failed_count} product rows failed to download any image.")
 
-# --- Image Processing Functions ---
-def trim_border(img: PILImage.Image, logger_instance: logging.Logger) -> PILImage.Image:
-    """
-    Aggressively trim uniform borders (e.g., white padding) while preserving image content.
-    Checks each side independently and ensures some cropping if uniform border is detected.
-    """
-    try:
-        img = ImageOps.exif_transpose(img.copy())
-        if img.mode != 'RGB':
-            img = img.convert('RGB')
-        arr = np.array(img)
-        height, width, _ = arr.shape
-
-        if height < MIN_DIMENSION_FOR_CROP or width < MIN_DIMENSION_FOR_CROP:
-            logger_instance.info(f"Image too small for cropping ({width}x{height}).")
-            return img
-
-        # Initialize crop boundaries
-        top_crop, bottom_crop, left_crop, right_crop = 0, 0, 0, 0
-        max_crop_pixels = int(min(width, height) * MAX_CROP_FRACTION)
-
-        # Check top border
-        for i in range(min(BORDER_CROP_WIDTH, height)):
-            row = arr[i, :, :]
-            colors, counts = np.unique(row.reshape(-1, 3), axis=0, return_counts=True)
-            dominant_color = colors[np.argmax(counts)]
-            dominant_fraction = counts.max() / row.size
-            if dominant_fraction > BORDER_UNIFORMITY_THRESHOLD and np.sum(dominant_color) > 500:  # Light color
-                if np.all(np.abs(row - dominant_color) <= BORDER_COLOR_TOLERANCE, axis=1).mean() > 0.8:
-                    top_crop = i + 1
-                else:
-                    break
-            else:
-                break
-        top_crop = min(max(top_crop, 1), max_crop_pixels) if top_crop > 0 else 0
-
-        # Check bottom border
-        for i in range(min(BORDER_CROP_WIDTH, height)):
-            row = arr[-(i + 1), :, :]
-            colors, counts = np.unique(row.reshape(-1, 3), axis=0, return_counts=True)
-            dominant_color = colors[np.argmax(counts)]
-            dominant_fraction = counts.max() / row.size
-            if dominant_fraction > BORDER_UNIFORMITY_THRESHOLD and np.sum(dominant_color) > 500:
-                if np.all(np.abs(row - dominant_color) <= BORDER_COLOR_TOLERANCE, axis=1).mean() > 0.8:
-                    bottom_crop = i + 1
-                else:
-                    break
-            else:
-                break
-        bottom_crop = min(max(bottom_crop, 1), max_crop_pixels) if bottom_crop > 0 else 0
-
-        # Check left border
-        for i in range(min(BORDER_CROP_WIDTH, width)):
-            col = arr[:, i, :]
-            colors, counts = np.unique(col.reshape(-1, 3), axis=0, return_counts=True)
-            dominant_color = colors[np.argmax(counts)]
-            dominant_fraction = counts.max() / col.size
-            if dominant_fraction > BORDER_UNIFORMITY_THRESHOLD and np.sum(dominant_color) > 500:
-                if np.all(np.abs(col - dominant_color) <= BORDER_COLOR_TOLERANCE, axis=1).mean() > 0.8:
-                    left_crop = i + 1
-                else:
-                    break
-            else:
-                break
-        left_crop = min(max(left_crop, 1), max_crop_pixels) if left_crop > 0 else 0
-
-        # Check right border
-        for i in range(min(BORDER_CROP_WIDTH, width)):
-            col = arr[:, -(i + 1), :]
-            colors, counts = np.unique(col.reshape(-1, 3), axis=0, return_counts=True)
-            dominant_color = colors[np.argmax(counts)]
-            dominant_fraction = counts.max() / col.size
-            if dominant_fraction > BORDER_UNIFORMITY_THRESHOLD and np.sum(dominant_color) > 500:
-                if np.all(np.abs(col - dominant_color) <= BORDER_COLOR_TOLERANCE, axis=1).mean() > 0.8:
-                    right_crop = i + 1
-                else:
-                    break
-            else:
-                break
-        right_crop = min(max(right_crop, 1), max_crop_pixels) if right_crop > 0 else 0
-
-        # Apply cropping if valid
-        if top_crop + bottom_crop < height and left_crop + right_crop < width:
-            new_height = height - top_crop - bottom_crop
-            new_width = width - left_crop - right_crop
-            if new_height >= MIN_DIMENSION_FOR_CROP and new_width >= MIN_DIMENSION_FOR_CROP:
-                arr = arr[top_crop:height-bottom_crop, left_crop:width-right_crop, :]
-                logger_instance.info(f"Cropped image to {new_width}x{new_height} (top={top_crop}, bottom={bottom_crop}, left={left_crop}, right={right_crop})")
-                return PILImage.fromarray(arr.astype(np.uint8))
-            else:
-                logger_instance.info(f"Cropped size too small ({new_width}x{new_height}). Returning original.")
-        else:
-            logger_instance.info(f"No valid crop possible for image ({width}x{height}).")
-        return img
-    except Exception as e:
-        logger_instance.warning(f"Border trim failed: {e}. Returning original.")
-        return img
-
+# --- Image & Excel Processing Functions ---
 def resize_image(image_path: str, logger_instance: logging.Logger) -> bool:
     try:
-        with PILImage.open(image_path) as orig_img:
-            orig_img.load()  # Ensure fully loaded
-            img = orig_img.copy()
+        with PILImage.open(image_path) as img:
+            img.load()  # Ensure image is fully loaded
 
-            # Trim borders before resizing
-            img = trim_border(img, logger_instance)
-
-            # Resize if necessary
+            # Resize in memory
             width, height = img.size
             if height > MAX_IMAGE_DIMENSION or width > MAX_IMAGE_DIMENSION:
                 img.thumbnail((MAX_IMAGE_DIMENSION, MAX_IMAGE_DIMENSION), PILImage.Resampling.LANCZOS)
-                logger_instance.info(f"Resized image to fit max dimension {MAX_IMAGE_DIMENSION}")
+                logger_instance.info(f"Resized image {image_path} to fit max dimension {MAX_IMAGE_DIMENSION}")
 
-            # Save with explicit uint8 and compress_level to prevent corruption
-            img_array = np.array(img, dtype=np.uint8)
-            processed_img = PILImage.fromarray(img_array)
-            processed_img.save(image_path, 'PNG', compress_level=6, quality=95)
+            # Save once at the end
+            img.save(image_path, 'PNG', compress_level=6, quality=95)
             return True
     except Exception as e:
         logger_instance.error(f"Error resizing image {image_path}: {e}", exc_info=True)
@@ -394,24 +289,139 @@ def get_last_non_empty_row(ws, column: str, header_row: int, logger_instance: lo
     return last_row
 
 def verify_and_process_image(image_path: str, logger_instance: logging.Logger) -> bool:
-    """Verify, process, and ensure no corruption."""
+    """Verify, crop, and process image in memory to avoid corruption."""
     try:
-        # Verify integrity without loading full data
+        # Verify image integrity
         with PILImage.open(image_path) as temp_img:
             temp_img.verify()
         if os.path.getsize(image_path) < MIN_IMAGE_SIZE:
             logger_instance.warning(f"File too small: {image_path}")
             return False
 
-        # Delegate to resize_image which handles trim and save
-        return resize_image(image_path, logger_instance)
+        # Load image for processing
+        img = PILImage.open(image_path)
+        img.load()
+
+        # Process image (cropping and border removal)
+        img = process_image_remove_lines(image_path, img, logger_instance)
+
+        # Resize if necessary
+        w, h = img.size
+        if h > MAX_IMAGE_DIMENSION or w > MAX_IMAGE_DIMENSION:
+            img.thumbnail((MAX_IMAGE_DIMENSION, MAX_IMAGE_DIMENSION), PILImage.Resampling.LANCZOS)
+            logger_instance.info(f"Resized image {image_path} to fit max dimension {MAX_IMAGE_DIMENSION}")
+
+        # Save processed image once
+        img.save(image_path, 'PNG', compress_level=6, quality=95)
+        logger_instance.info(f"Image verified and processed: {image_path}")
+        return True
     except Exception as e:
         logger_instance.error(f"Image verification failed for {image_path}: {e}", exc_info=True)
         return False
 
+def process_image_remove_lines(image_path: str, img: PILImage.Image, logger_instance: logging.Logger) -> PILImage.Image:
+    """Process image in memory to remove uniform lines and borders, preventing smearing."""
+    try:
+        img = ImageOps.exif_transpose(img.copy())
+        arr = np.array(img)
+        original_height, original_width, _ = arr.shape
+
+        # Detect non-uniform horizontal rows
+        valid_row_indices = [y for y in range(original_height) if np.any(np.max(arr[y], axis=0) - np.min(arr[y], axis=0) >= 15)]
+        row_cropped = False
+        if valid_row_indices:
+            rows_to_keep = get_valid_indices_with_padding(valid_row_indices, original_height - 1, pad=5)
+            row_cropped = len(rows_to_keep) != original_height
+            arr = arr[rows_to_keep]
+            logger_instance.info(f"Kept {len(rows_to_keep)} of {original_height} rows for {image_path}")
+        else:
+            logger_instance.info(f"No non-uniform rows found in {image_path}")
+
+        # Detect non-uniform vertical columns
+        arr_t = np.transpose(arr, (1, 0, 2))
+        new_width = arr_t.shape[0]
+        valid_col_indices = [x for x in range(new_width) if np.any(np.max(arr_t[x], axis=0) - np.min(arr_t[x], axis=0) >= 15)]
+        col_cropped = False
+        if valid_col_indices:
+            cols_to_keep = get_valid_indices_with_padding(valid_col_indices, new_width - 1, pad=5)
+            col_cropped = len(cols_to_keep) != new_width
+            arr_t = arr_t[cols_to_keep]
+            arr = np.transpose(arr_t, (1, 0, 2))
+            logger_instance.info(f"Kept {len(cols_to_keep)} of {new_width} columns for {image_path}")
+        else:
+            logger_instance.info(f"No non-uniform columns found in {image_path}")
+
+        # Check if cropped image is too small
+        cleaned_height, cleaned_width, _ = arr.shape
+        min_dim = 50
+        if (row_cropped or col_cropped) and (cleaned_height < min_dim or cleaned_width < min_dim):
+            logger_instance.warning(f"Cropped image too small ({cleaned_height}x{cleaned_width}) for {image_path}. Using original.")
+            return img
+
+        # Border removal (only if dimensions are sufficient)
+        pixels = arr
+        if cleaned_height >= MIN_DIMENSION_FOR_BORDER and cleaned_width >= MIN_DIMENSION_FOR_BORDER:
+            try:
+                # Collect border pixels from outer 5 pixels, avoiding corner overlaps
+                top_border = pixels[:BORDER_CROP_WIDTH, BORDER_CROP_WIDTH:-BORDER_CROP_WIDTH, :]
+                bottom_border = pixels[-BORDER_CROP_WIDTH:, BORDER_CROP_WIDTH:-BORDER_CROP_WIDTH, :]
+                left_border = pixels[BORDER_CROP_WIDTH:-BORDER_CROP_WIDTH, :BORDER_CROP_WIDTH, :]
+                right_border = pixels[BORDER_CROP_WIDTH:-BORDER_CROP_WIDTH, -BORDER_CROP_WIDTH:, :]
+                
+                border_pixels = np.vstack([
+                    top_border.reshape(-1, 3),
+                    bottom_border.reshape(-1, 3),
+                    left_border.reshape(-1, 3),
+                    right_border.reshape(-1, 3)
+                ])
+                
+                # Get dominant border color
+                colors, counts = np.unique(border_pixels, axis=0, return_counts=True)
+                total_border_pixels = len(border_pixels)
+                dominant_color = colors[np.argmax(counts)]
+                dominant_fraction = counts.max() / total_border_pixels
+                
+                # Check if border is light and sufficiently uniform
+                if np.sum(dominant_color) > 600 and dominant_fraction > BORDER_UNIFORMITY_THRESHOLD:
+                    # Create mask for border areas only
+                    mask = np.zeros((cleaned_height, cleaned_width), dtype=bool)
+                    mask[:BORDER_CROP_WIDTH, :] = np.all(np.abs(pixels[:BORDER_CROP_WIDTH, :, :] - dominant_color) <= BORDER_COLOR_TOLERANCE, axis=2)
+                    mask[-BORDER_CROP_WIDTH:, :] = np.all(np.abs(pixels[-BORDER_CROP_WIDTH:, :, :] - dominant_color) <= BORDER_COLOR_TOLERANCE, axis=2)
+                    mask[:, :BORDER_CROP_WIDTH] = np.all(np.abs(pixels[:, :BORDER_CROP_WIDTH, :] - dominant_color) <= BORDER_COLOR_TOLERANCE, axis=2)
+                    mask[:, -BORDER_CROP_WIDTH:] = np.all(np.abs(pixels[:, -BORDER_CROP_WIDTH:, :] - dominant_color) <= BORDER_COLOR_TOLERANCE, axis=2)
+                    
+                    # Avoid modifying inner region
+                    mask[BORDER_CROP_WIDTH:-BORDER_CROP_WIDTH, BORDER_CROP_WIDTH:-BORDER_CROP_WIDTH] = False
+                    
+                    # Replace border pixels with white
+                    pixels[mask] = np.array([255, 255, 255])
+                    arr = pixels
+                    logger_instance.info(f"Applied border removal for {image_path} (dominant color {dominant_color}, fraction {dominant_fraction:.2f})")
+                else:
+                    logger_instance.info(f"No light uniform border detected for {image_path} (fraction {dominant_fraction:.2f}, color sum {np.sum(dominant_color)})")
+            except Exception as e:
+                logger_instance.warning(f"Border removal failed for {image_path}: {e}. Using cropped image.")
+        else:
+            logger_instance.info(f"Image too small for border removal ({cleaned_height}x{cleaned_width}) for {image_path}")
+
+        return PILImage.fromarray(arr.astype(np.uint8))
+    except Exception as e:
+        logger_instance.error(f"Error processing image {image_path} to remove lines: {e}", exc_info=True)
+        return img
+
+def get_valid_indices_with_padding(valid_indices, max_index, pad=5):
+    """Identify indices with padding for non-uniform rows/columns."""
+    padded = set()
+    for idx in valid_indices:
+        start = max(0, idx - pad)
+        end = min(max_index, idx + pad + 1)
+        padded.update(range(start, end))
+    return sorted(padded)
+
 def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, logger_instance: logging.Logger, row_offset: int = 0):
     """
-    Write image and metadata to the Excel file for DISTRO type, with conservative cropping.
+    Write image and metadata to the Excel file for DISTRO type, with cropping to remove uniform lines
+    and scaling to fit cell width with centering.
     """
     try:
         header_row = int(header_row)
