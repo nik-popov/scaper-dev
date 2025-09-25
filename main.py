@@ -1,3 +1,4 @@
+
 import asyncio
 import logging
 import os
@@ -43,10 +44,10 @@ VALID_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/bmp', 'image
 MIN_IMAGE_SIZE = 1000  # Minimum content length in bytes
 MAX_IMAGE_DIMENSION = 130  # For resizing
 MIN_DIMENSION_FOR_CROP = 20  # Minimum dimension to attempt cropping
-BORDER_CROP_WIDTH = 5  # Pixels to check for border on each side
-BORDER_UNIFORMITY_THRESHOLD = 0.1  # 10% of pixels must match dominant color
-BORDER_COLOR_TOLERANCE = 15  # RGB tolerance for border color matching
-MAX_CROP_FRACTION = 0.25  # Max 25% of width/height can be cropped
+BORDER_CROP_WIDTH = 10  # Pixels to check for border on each side
+BORDER_UNIFORMITY_THRESHOLD = 0.025  # 2.5% of pixels must match dominant color
+BORDER_COLOR_TOLERANCE = 10  # RGB tolerance for border color matching
+MAX_CROP_FRACTION = 0.35  # Max 35% of width/height can be cropped
 
 def get_user_agents(logger_instance: logging.Logger) -> List[str]:
     """
@@ -264,8 +265,8 @@ async def download_all_images(data: List[Dict], save_path: str, logger_instance:
 # --- Image Processing Functions ---
 def trim_border(img: PILImage.Image, logger_instance: logging.Logger) -> PILImage.Image:
     """
-    Conservatively trim uniform borders (e.g., white padding) while preserving image content.
-    Checks each side independently and limits cropping to avoid over-trimming.
+    Aggressively trim uniform borders (e.g., white padding) while preserving image content.
+    Checks each side independently and ensures some cropping if uniform border is detected.
     """
     try:
         img = ImageOps.exif_transpose(img.copy())
@@ -288,14 +289,14 @@ def trim_border(img: PILImage.Image, logger_instance: logging.Logger) -> PILImag
             colors, counts = np.unique(row.reshape(-1, 3), axis=0, return_counts=True)
             dominant_color = colors[np.argmax(counts)]
             dominant_fraction = counts.max() / row.size
-            if dominant_fraction > BORDER_UNIFORMITY_THRESHOLD and np.sum(dominant_color) > 600:  # Light color
-                if np.all(np.abs(row - dominant_color) <= BORDER_COLOR_TOLERANCE, axis=1).mean() > 0.9:
+            if dominant_fraction > BORDER_UNIFORMITY_THRESHOLD and np.sum(dominant_color) > 500:  # Light color
+                if np.all(np.abs(row - dominant_color) <= BORDER_COLOR_TOLERANCE, axis=1).mean() > 0.8:
                     top_crop = i + 1
                 else:
                     break
             else:
                 break
-        top_crop = min(top_crop, max_crop_pixels)
+        top_crop = min(max(top_crop, 1), max_crop_pixels) if top_crop > 0 else 0
 
         # Check bottom border
         for i in range(min(BORDER_CROP_WIDTH, height)):
@@ -303,14 +304,14 @@ def trim_border(img: PILImage.Image, logger_instance: logging.Logger) -> PILImag
             colors, counts = np.unique(row.reshape(-1, 3), axis=0, return_counts=True)
             dominant_color = colors[np.argmax(counts)]
             dominant_fraction = counts.max() / row.size
-            if dominant_fraction > BORDER_UNIFORMITY_THRESHOLD and np.sum(dominant_color) > 600:
-                if np.all(np.abs(row - dominant_color) <= BORDER_COLOR_TOLERANCE, axis=1).mean() > 0.9:
+            if dominant_fraction > BORDER_UNIFORMITY_THRESHOLD and np.sum(dominant_color) > 500:
+                if np.all(np.abs(row - dominant_color) <= BORDER_COLOR_TOLERANCE, axis=1).mean() > 0.8:
                     bottom_crop = i + 1
                 else:
                     break
             else:
                 break
-        bottom_crop = min(bottom_crop, max_crop_pixels)
+        bottom_crop = min(max(bottom_crop, 1), max_crop_pixels) if bottom_crop > 0 else 0
 
         # Check left border
         for i in range(min(BORDER_CROP_WIDTH, width)):
@@ -318,14 +319,14 @@ def trim_border(img: PILImage.Image, logger_instance: logging.Logger) -> PILImag
             colors, counts = np.unique(col.reshape(-1, 3), axis=0, return_counts=True)
             dominant_color = colors[np.argmax(counts)]
             dominant_fraction = counts.max() / col.size
-            if dominant_fraction > BORDER_UNIFORMITY_THRESHOLD and np.sum(dominant_color) > 600:
-                if np.all(np.abs(col - dominant_color) <= BORDER_COLOR_TOLERANCE, axis=1).mean() > 0.9:
+            if dominant_fraction > BORDER_UNIFORMITY_THRESHOLD and np.sum(dominant_color) > 500:
+                if np.all(np.abs(col - dominant_color) <= BORDER_COLOR_TOLERANCE, axis=1).mean() > 0.8:
                     left_crop = i + 1
                 else:
                     break
             else:
                 break
-        left_crop = min(left_crop, max_crop_pixels)
+        left_crop = min(max(left_crop, 1), max_crop_pixels) if left_crop > 0 else 0
 
         # Check right border
         for i in range(min(BORDER_CROP_WIDTH, width)):
@@ -333,14 +334,14 @@ def trim_border(img: PILImage.Image, logger_instance: logging.Logger) -> PILImag
             colors, counts = np.unique(col.reshape(-1, 3), axis=0, return_counts=True)
             dominant_color = colors[np.argmax(counts)]
             dominant_fraction = counts.max() / col.size
-            if dominant_fraction > BORDER_UNIFORMITY_THRESHOLD and np.sum(dominant_color) > 600:
-                if np.all(np.abs(col - dominant_color) <= BORDER_COLOR_TOLERANCE, axis=1).mean() > 0.9:
+            if dominant_fraction > BORDER_UNIFORMITY_THRESHOLD and np.sum(dominant_color) > 500:
+                if np.all(np.abs(col - dominant_color) <= BORDER_COLOR_TOLERANCE, axis=1).mean() > 0.8:
                     right_crop = i + 1
                 else:
                     break
             else:
                 break
-        right_crop = min(right_crop, max_crop_pixels)
+        right_crop = min(max(right_crop, 1), max_crop_pixels) if right_crop > 0 else 0
 
         # Apply cropping if valid
         if top_crop + bottom_crop < height and left_crop + right_crop < width:
