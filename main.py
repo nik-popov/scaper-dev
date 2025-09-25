@@ -132,7 +132,6 @@ def get_file_location_and_header(file_id: int, logger_instance: logging.Logger) 
             raise FileNotFoundError(f"No file location found in DB for FileID {file_id}")
         file_location = result[0]
         header_row = result[1]
-        # Ensure header_row is an integer or None
         if header_row is not None:
             try:
                 header_row = int(header_row)
@@ -377,7 +376,14 @@ def process_image_remove_lines(image_path: str, img: PILImage.Image, logger_inst
         colors, counts = np.unique(border_pixels, axis=0, return_counts=True)
         most_common = colors[counts.argmax()]
         if np.sum(most_common) > 700:  # Light border
-            mask = np.all(npહ
+            mask = np.all(np.abs(pixels - most_common) <= 15, axis=2)
+            pixels[mask] = np.array([255, 255, 255])
+            arr = pixels
+
+        return PILImage.fromarray(arr.astype(np.uint8))
+    except Exception as e:
+        logger_instance.error(f"Error processing image {image_path} to remove lines: {e}", exc_info=True)
+        return img
 
 def get_valid_indices_with_padding(valid_indices, max_index, pad=10):
     """Identify indices with padding for non-uniform rows/columns."""
