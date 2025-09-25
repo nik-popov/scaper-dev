@@ -19,7 +19,7 @@ from openpyxl import load_workbook
 from openpyxl.drawing.image import Image
 from openpyxl.utils import column_index_from_string
 from PIL import Image as PILImage
-from PIL import UnidentifiedImageError, ImageOps
+from PIL import UnidentifiedImageError, ImageOps, ImageChops
 from tldextract import tldextract
 import urllib.parse
 from pathlib import Path
@@ -44,6 +44,9 @@ MIN_IMAGE_SIZE = 1000  # Minimum content length in bytes
 MAX_IMAGE_VERIFY_SIZE = 1000  # For verification before processing
 MAX_IMAGE_DIMENSION = 130  # For resizing
 MIN_DIMENSION_FOR_BORDER = 10  # Minimum dimension to attempt border removal
+BORDER_REMOVAL_THRESHOLD = 0.05  # 5% of border pixels must match for removal
+BORDER_COLOR_TOLERANCE = 15  # RGB tolerance for border color matching
+BORDER_INNER_MARGIN = 5  # Pixels to exclude from inner area for detection
 
 def get_user_agents(logger_instance: logging.Logger) -> List[str]:
     """
@@ -211,7 +214,14 @@ async def image_download(semaphore, item: Dict, save_path: str, session, logger_
 
                         def save_image_sync():
                             with PILImage.open(BytesIO(data)) as img:
-                                img.save(final_path, 'PNG')
+                                # Ensure proper mode conversion during save
+                                if img.mode == 'RGBA':
+                                    background = PILImage.new('RGB', img.size, (255, 255, 255))
+                                    background.paste(img, mask=img.split()[3])
+                                    img = background
+                                elif img.mode != 'RGB':
+                                    img = img.convert('RGB')
+                                img.save(final_path, 'PNG', compress_level=6)
                         
                         await loop.run_in_executor(None, save_image_sync)
                                 
@@ -252,27 +262,55 @@ async def download_all_images(data: List[Dict], save_path: str, logger_instance:
             logger_instance.warning(f"{failed_count} product rows failed to download any image.")
 
 # --- Image & Excel Processing Functions ---
+def trim_border(img: PILImage.Image, logger_instance: logging.Logger) -> PILImage.Image:
+    """
+    Trim uniform borders using ImageChops for robust border removal.
+    This prevents smearing by focusing on uniform color regions.
+    """
+    try:
+        # Assume corner defines border color, trim whitespace-like borders
+        bg = PILImage.new(img.mode, img.size, img.getpixel((0, 0)))
+        diff = ImageChops.difference(img, bg)
+        diff = ImageChops.add(diff, diff, 2.0, -100)  # Enhance contrast
+        bbox = diff.getbbox()
+        if bbox:
+            trimmed = img.crop(bbox)
+            logger_instance.info(f"Trimmed borders from image, new size: {trimmed.size}")
+            return trimmed
+        else:
+            logger_instance.info("No trimmable borders found.")
+            return img
+    except Exception as e:
+        logger_instance.warning(f"Border trim failed: {e}. Returning original.")
+        return img
+
 def resize_image(image_path: str, logger_instance: logging.Logger) -> bool:
     try:
-        img = PILImage.open(image_path)
-        img.load()  # Ensure image is fully loaded
+        with PILImage.open(image_path) as orig_img:
+            orig_img.load()  # Ensure fully loaded
+            img = orig_img.copy()
 
-        # Handle mode conversion in memory
-        if img.mode == 'RGBA':
-            background = PILImage.new('RGB', img.size, (255, 255, 255))
-            background.paste(img, mask=img.split()[3])
-            img = background
-        elif img.mode != 'RGB':
-            img = img.convert('RGB')
+            # Handle mode conversion
+            if img.mode == 'RGBA':
+                background = PILImage.new('RGB', img.size, (255, 255, 255))
+                background.paste(img, mask=img.split()[3])
+                img = background
+            elif img.mode != 'RGB':
+                img = img.convert('RGB')
 
-        # Resize in memory
-        width, height = img.size
-        if height > MAX_IMAGE_DIMENSION or width > MAX_IMAGE_DIMENSION:
-            img.thumbnail((MAX_IMAGE_DIMENSION, MAX_IMAGE_DIMENSION), PILImage.Resampling.LANCZOS)
+            # Trim borders before resizing to prevent issues
+            img = trim_border(img, logger_instance)
 
-        # Save once at the end
-        img.save(image_path, 'PNG', quality=95)
-        return True
+            # Resize if necessary
+            width, height = img.size
+            if height > MAX_IMAGE_DIMENSION or width > MAX_IMAGE_DIMENSION:
+                img.thumbnail((MAX_IMAGE_DIMENSION, MAX_IMAGE_DIMENSION), PILImage.Resampling.LANCZOS)
+
+            # Save with explicit uint8 and compress_level to prevent corruption
+            img_array = np.array(img, dtype=np.uint8)
+            processed_img = PILImage.fromarray(img_array)
+            processed_img.save(image_path, 'PNG', compress_level=6, quality=95)
+            return True
     except Exception as e:
         logger_instance.error(f"Error resizing image {image_path}: {e}", exc_info=True)
         return False
@@ -287,119 +325,20 @@ def get_last_non_empty_row(ws, column: str, header_row: int, logger_instance: lo
     return last_row
 
 def verify_and_process_image(image_path: str, logger_instance: logging.Logger) -> bool:
-    """Verify, crop, and process image in memory to avoid corruption."""
+    """Verify, process, and ensure no corruption."""
     try:
-        # Verify image integrity
+        # Verify integrity without loading full data
         with PILImage.open(image_path) as temp_img:
             temp_img.verify()
         if os.path.getsize(image_path) < MIN_IMAGE_SIZE:
             logger_instance.warning(f"File too small: {image_path}")
             return False
 
-        # Load image for processing
-        img = PILImage.open(image_path)
-        img.load()
-
-        # Process image (cropping and border removal)
-        img = process_image_remove_lines(image_path, img, logger_instance)
-        
-        # Ensure RGB mode
-        if img.mode != 'RGB':
-            img = img.convert('RGB')
-
-        # Resize if necessary
-        w, h = img.size
-        if h > MAX_IMAGE_DIMENSION or w > MAX_IMAGE_DIMENSION:
-            img.thumbnail((MAX_IMAGE_DIMENSION, MAX_IMAGE_DIMENSION), PILImage.Resampling.LANCZOS)
-            logger_instance.info(f"Resized image {image_path} to fit max dimension {MAX_IMAGE_DIMENSION}")
-
-        # Save processed image once
-        img.save(image_path, 'PNG', quality=95)
-        logger_instance.info(f"Image verified and processed: {image_path}")
-        return True
+        # Delegate to resize_image which handles trim and save
+        return resize_image(image_path, logger_instance)
     except Exception as e:
         logger_instance.error(f"Image verification failed for {image_path}: {e}", exc_info=True)
         return False
-
-def process_image_remove_lines(image_path: str, img: PILImage.Image, logger_instance: logging.Logger) -> PILImage.Image:
-    """Process image in memory to remove uniform lines, returning the processed image."""
-    try:
-        img = ImageOps.exif_transpose(img.copy())
-        if img.mode != 'RGB':
-            img = img.convert('RGB')
-        arr = np.array(img)
-        original_height, original_width, _ = arr.shape
-
-        # Detect non-uniform horizontal rows
-        valid_row_indices = [y for y in range(original_height) if np.any(np.max(arr[y], axis=0) - np.min(arr[y], axis=0) >= 15)]
-        row_cropped = False
-        if valid_row_indices:
-            rows_to_keep = get_valid_indices_with_padding(valid_row_indices, original_height - 1, pad=5)
-            row_cropped = len(rows_to_keep) != original_height
-            arr = arr[rows_to_keep]
-            logger_instance.info(f"Kept {len(rows_to_keep)} of {original_height} rows for {image_path}")
-        else:
-            logger_instance.info(f"No non-uniform rows found in {image_path}")
-
-        # Detect non-uniform vertical columns
-        arr_t = np.transpose(arr, (1, 0, 2))
-        new_width = arr_t.shape[0]
-        valid_col_indices = [x for x in range(new_width) if np.any(np.max(arr_t[x], axis=0) - np.min(arr_t[x], axis=0) >= 15)]
-        col_cropped = False
-        if valid_col_indices:
-            cols_to_keep = get_valid_indices_with_padding(valid_col_indices, new_width - 1, pad=5)
-            col_cropped = len(cols_to_keep) != new_width
-            arr_t = arr_t[cols_to_keep]
-            arr = np.transpose(arr_t, (1, 0, 2))
-            logger_instance.info(f"Kept {len(cols_to_keep)} of {new_width} columns for {image_path}")
-        else:
-            logger_instance.info(f"No non-uniform columns found in {image_path}")
-
-        # Check if cropped image is too small
-        cleaned_height, cleaned_width, _ = arr.shape
-        min_dim = 50
-        if (row_cropped or col_cropped) and (cleaned_height < min_dim or cleaned_width < min_dim):
-            logger_instance.warning(f"Cropped image too small ({cleaned_height}x{cleaned_width}) for {image_path}. Using original.")
-            return img
-
-        # Border removal (only if dimensions are sufficient)
-        pixels = arr
-        if cleaned_height >= MIN_DIMENSION_FOR_BORDER and cleaned_width >= MIN_DIMENSION_FOR_BORDER:
-            try:
-                border_pixels = np.concatenate([
-                    pixels[:5, :],  # Top 5 rows
-                    pixels[-5:, :],  # Bottom 5 rows
-                    pixels[:, :5],   # Left 5 columns
-                    pixels[:, -5:]   # Right 5 columns
-                ])
-                colors, counts = np.unique(border_pixels, axis=0, return_counts=True)
-                most_common = colors[counts.argmax()]
-                if np.sum(most_common) > 750:  # Very light border
-                    mask = np.all(np.abs(pixels - most_common) <= 10, axis=2)
-                    mask[5:-5, 5:-5] = False  # Restrict to outer 5 pixels
-                    pixels[mask] = np.array([255, 255, 255])
-                    arr = pixels
-                    logger_instance.info(f"Applied border removal for {image_path}")
-                else:
-                    logger_instance.info(f"No light border detected for {image_path}")
-            except Exception as e:
-                logger_instance.warning(f"Border removal failed for {image_path}: {e}. Using cropped image.")
-        else:
-            logger_instance.info(f"Image too small for border removal ({cleaned_height}x{cleaned_width}) for {image_path}")
-
-        return PILImage.fromarray(arr.astype(np.uint8))
-    except Exception as e:
-        logger_instance.error(f"Error processing image {image_path} to remove lines: {e}", exc_info=True)
-        return img
-
-def get_valid_indices_with_padding(valid_indices, max_index, pad=5):
-    """Identify indices with padding for non-uniform rows/columns."""
-    padded = set()
-    for idx in valid_indices:
-        start = max(0, idx - pad)
-        end = min(max_index, idx + pad + 1)
-        padded.update(range(start, end))
-    return sorted(padded)
 
 def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, logger_instance: logging.Logger, row_offset: int = 0):
     """
