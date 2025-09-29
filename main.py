@@ -12,8 +12,8 @@ import aiohttp
 import pandas as pd
 import pyodbc
 import requests
-from openpyxl.drawing.xdr import XDRPositiveSize2D, XDRPoint2D, TwoCellAnchor
-from openpyxl.utils.units import pixels_to_EMU
+from openpyxl.drawing.xdr import XDRPositiveSize2D, XDRPoint2D
+from openpyxl.drawing.spreadsheet_drawing import TwoCellAnchor
 from aiohttp import ClientTimeout
 from aiohttp_retry import RetryClient, ExponentialRetry
 from fastapi import FastAPI, BackgroundTasks
