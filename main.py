@@ -13,7 +13,6 @@ import pandas as pd
 import pyodbc
 import requests
 from openpyxl.utils.units import pixels_to_EMU
-from openpyxl.utils.units import points_to_pixels
 from openpyxl.drawing.xdr import XDRPositiveSize2D, AnchorMarker, TwoCellAnchor
 from aiohttp import ClientTimeout
 from aiohttp_retry import RetryClient, ExponentialRetry
@@ -49,7 +48,9 @@ MIN_DIMENSION_FOR_BORDER = 10  # Minimum dimension to attempt border removal
 BORDER_CROP_WIDTH = 5  # Pixels to check for border on each side
 BORDER_UNIFORMITY_THRESHOLD = 0.05  # 5% of pixels must match dominant color
 BORDER_COLOR_TOLERANCE = 10  # RGB tolerance for border color matching
-
+def points_to_pixels(points):
+    """Convert points to pixels assuming 96 DPI (1 point = 1.333 pixels)."""
+    return points * 1.333
 def get_user_agents(logger_instance: logging.Logger) -> List[str]:
     """
     Fetches a list of user agents from the DataProxy API.
@@ -422,10 +423,6 @@ def get_valid_indices_with_padding(valid_indices, max_index, pad=5):
     return sorted(padded)
 
 def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, logger_instance: logging.Logger, row_offset: int = 0):
-    """
-    Write image and metadata to the Excel file for DISTRO type, with cropping to remove uniform lines
-    and scaling to fit cell width with centering.
-    """
     try:
         header_row = int(header_row)
         if header_row < 0:
@@ -438,7 +435,6 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
         ws = wb.active
         image_map = {int(Path(f).stem): f for f in Path(temp_dir).iterdir() if f.stem.isdigit()}
 
-        # Get default row height
         DEFAULT_ROW_HEIGHT_POINTS = ws.row_dimensions.get(header_row + 1, {}).height or 12.75
         logger_instance.info(f"Using template row height: {DEFAULT_ROW_HEIGHT_POINTS} points from row {header_row + 1}")
 
@@ -455,7 +451,6 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
             max_row_id = last_non_empty_row - header_row if last_non_empty_row > header_row else 1
             logger_instance.warning(f"No data in image_data, setting range based on template last row {last_non_empty_row}")
 
-        # Ensure enough rows
         max_needed_row = (max_row_id - header_row) + row_offset
         if max_needed_row < 1:
             logger_instance.error(f"max_needed_row {max_needed_row} is less than 1. Aborting.")
@@ -467,7 +462,6 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                 ws.append([''] * ws.max_column)
                 ws.row_dimensions[row_num].height = DEFAULT_ROW_HEIGHT_POINTS
 
-        # Cell dimensions for centering
         CELL_WIDTH_POINTS = 100
         CELL_HEIGHT_POINTS = max(DEFAULT_ROW_HEIGHT_POINTS, 150)
         PADDING_POINTS = 5
@@ -491,12 +485,10 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                         img_height_points = img_height_pixels * 72 / 96
                         img_width_points = img_width_pixels * 0.132
 
-                        # Set column width
                         required_width = img_width_points + PADDING_POINTS * 2
                         current_width = ws.column_dimensions['A'].width or 8.43
                         ws.column_dimensions['A'].width = min(CELL_WIDTH_POINTS, max(current_width, required_width))
 
-                        # Center image
                         cell_width_pixels = points_to_pixels(ws.column_dimensions['A'].width)
                         cell_height_pixels = points_to_pixels(CELL_HEIGHT_POINTS)
                         x_offset_pixels = max(0, (cell_width_pixels - img_width_pixels) / 2)
@@ -507,8 +499,8 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
 
                         anchor = TwoCellAnchor(
                             editAs='absolute',
-                            _from=AnchorMarker(col=0, colOff=x_offset_emu, row=row_num - 1, rowOff=y_offset_emu),
-                            to=AnchorMarker(col=0, colOff=x_offset_emu + pixels_to_EMU(img_width_pixels), row=row_num - 1, rowOff=y_offset_emu + pixels_to_EMU(img_height_pixels))
+                            _from=XDRPoint2D(x_offset_emu, y_offset_emu),
+                            to=XDRPoint2D(x_offset_emu + pixels_to_EMU(img_width_pixels), y_offset_emu + pixels_to_EMU(img_height_pixels))
                         )
                         anchor.ext = XDRPositiveSize2D(pixels_to_EMU(img_width_pixels), pixels_to_EMU(img_height_pixels))
                         img.anchor = anchor
@@ -522,7 +514,6 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                 else:
                     logger_instance.info(f"No image found for Row {row_id}, writing metadata only")
 
-                # Write metadata
                 if row_num > header_row:
                     ws[f"B{row_num}"] = item.get('Brand', '')
                     ws[f"D{row_num}"] = item.get('Style', '')
@@ -541,7 +532,6 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                 else:
                     logger_instance.info(f"Skipping row {row_num} (ExcelRowID {row_id}) as it is the header row")
 
-        # Clean up extra rows
         if ws.max_row > max_needed_row:
             logger_instance.info(f"Deleting {ws.max_row - max_needed_row} rows after row {max_needed_row}")
             ws.delete_rows(max_needed_row + 1, ws.max_row - max_needed_row)
@@ -553,6 +543,7 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
     except Exception as e:
         logger_instance.error(f"Error writing to DISTRO Excel file: {e}", exc_info=True)
         raise
+
 
 def find_header_row_index(excel_file: str, logger_instance: logging.Logger) -> Optional[int]:
     try:
