@@ -12,6 +12,9 @@ import aiohttp
 import pandas as pd
 import pyodbc
 import requests
+from openpyxl.utils.units import pixels_to_EMU
+from openpyxl.utils.units import points_to_pixels
+from openpyxl.drawing.xdr import XDRPositiveSize2D, AnchorMarker, TwoCellAnchor
 from aiohttp import ClientTimeout
 from aiohttp_retry import RetryClient, ExponentialRetry
 from fastapi import FastAPI, BackgroundTasks
@@ -490,7 +493,8 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
 
                         # Set column width
                         required_width = img_width_points + PADDING_POINTS * 2
-                        ws.column_dimensions['A'].width = min(CELL_WIDTH_POINTS, max(ws.column_dimensions['A'].width or 0, required_width))
+                        current_width = ws.column_dimensions['A'].width or 8.43
+                        ws.column_dimensions['A'].width = min(CELL_WIDTH_POINTS, max(current_width, required_width))
 
                         # Center image
                         cell_width_pixels = points_to_pixels(ws.column_dimensions['A'].width)
