@@ -12,8 +12,8 @@ import aiohttp
 import pandas as pd
 import pyodbc
 import requests
-from openpyxl.drawing.xdr import XDRPositiveSize2D, XDRPoint2D
-from openpyxl.drawing.spreadsheet_drawing import TwoCellAnchor
+from openpyxl.drawing.xdr import XDRPositiveSize2D
+from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, OneCellAnchor
 from aiohttp import ClientTimeout
 from aiohttp_retry import RetryClient, ExponentialRetry
 from fastapi import FastAPI, BackgroundTasks
@@ -48,9 +48,13 @@ MIN_DIMENSION_FOR_BORDER = 10  # Minimum dimension to attempt border removal
 BORDER_CROP_WIDTH = 5  # Pixels to check for border on each side
 BORDER_UNIFORMITY_THRESHOLD = 0.05  # 5% of pixels must match dominant color
 BORDER_COLOR_TOLERANCE = 10  # RGB tolerance for border color matching
+EMU_PER_PIXEL = 9525  # EMUs per pixel at 96 DPI
 def points_to_pixels(points):
     """Convert points to pixels assuming 96 DPI (1 point = 1.333 pixels)."""
     return points * 1.333
+def pixels_to_EMU(pixels: float) -> int:
+    """Convert pixels to English Metric Units (EMU) using 96 DPI."""
+    return int(round(pixels * EMU_PER_PIXEL))
 def get_user_agents(logger_instance: logging.Logger) -> List[str]:
     """
     Fetches a list of user agents from the DataProxy API.
@@ -494,16 +498,15 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                         x_offset_pixels = max(0, (cell_width_pixels - img_width_pixels) / 2)
                         y_offset_pixels = max(0, (cell_height_pixels - img_height_pixels) / 2)
 
-                        x_offset_emu = pixels_to_EMU(x_offset_pixels)
-                        y_offset_emu = pixels_to_EMU(y_offset_pixels)
-
-                        anchor = TwoCellAnchor(
-                            editAs='absolute',
-                            _from=XDRPoint2D(x_offset_emu, y_offset_emu),
-                            to=XDRPoint2D(x_offset_emu + pixels_to_EMU(img_width_pixels), y_offset_emu + pixels_to_EMU(img_height_pixels))
+                        width_emu = pixels_to_EMU(img_width_pixels)
+                        height_emu = pixels_to_EMU(img_height_pixels)
+                        marker = AnchorMarker(
+                            col=0,
+                            colOff=pixels_to_EMU(x_offset_pixels),
+                            row=max(0, row_num - 1),
+                            rowOff=pixels_to_EMU(y_offset_pixels)
                         )
-                        anchor.ext = XDRPositiveSize2D(pixels_to_EMU(img_width_pixels), pixels_to_EMU(img_height_pixels))
-                        img.anchor = anchor
+                        img.anchor = OneCellAnchor(_from=marker, ext=XDRPositiveSize2D(width_emu, height_emu))
                         ws.add_image(img)
                         logger_instance.info(
                             f"Added image for Row {row_id} at Excel row {row_num}, "
