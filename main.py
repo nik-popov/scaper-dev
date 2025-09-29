@@ -33,7 +33,7 @@ from functools import partial
 from app_config import engine, conn_str
 from email_utils import send_email, send_message_email
 from s3_utils import upload_file_to_space
-
+from openpyxl.utils.units import pixels_to_EMU, points_to_pixels
 # --- Global Setup ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
