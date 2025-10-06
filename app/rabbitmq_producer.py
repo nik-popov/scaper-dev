@@ -21,7 +21,7 @@ class RabbitMQProducer:
 
     def __init__(
         self,
-        amqp_url: str = "amqp://app_user:app_password@localhost:5672/app_vhost", # Sensitive data, use env vars
+        amqp_url: str = "amqp://app_user:your_password@localhost:5672/app_vhost", # Sensitive data, use env vars
         queue_name: str = "db_update_queue",
         connection_timeout: float = 10.0,
         operation_timeout: float = 5.0,
