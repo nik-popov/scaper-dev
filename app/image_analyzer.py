@@ -192,7 +192,7 @@ async def _perform_full_ai_analysis(image_data: bytes, record: Dict, logger: log
         """
 
         genai.configure(api_key=GOOGLE_API_KEY)
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        model = genai.GenerativeModel("gemini-2.5-flash")
         image_part = {"mime_type": "image/jpeg", "data": base64.b64decode(image_base64)}
 
         for attempt in range(3):
