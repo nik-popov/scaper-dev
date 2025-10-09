@@ -50,7 +50,7 @@ class RabbitMQProducer:
         async with cls._lock:
             # Use the new 'is_connected' property for the check
             if cls._instance is None or not cls._instance.is_connected:
-                amqp_url = kwargs.get("amqp_url", "amqp://app_user:app_password@localhost:5672/app_vhost")
+                amqp_url = kwargs.get("amqp_url", "amqp://app_user:your_password@localhost:5672/app_vhost")
                 queue_name = kwargs.get("queue_name", "db_update_queue")
                 connection_timeout = kwargs.get("connection_timeout", 10.0)
                 operation_timeout = kwargs.get("operation_timeout", 5.0)
