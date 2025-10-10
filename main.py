@@ -863,7 +863,7 @@ async def generate_msrp_excel(file_id: str, target_column: str, row_offset: int 
         with open(local_filename, "wb") as f:
             f.write(res.content)
         
-        header_row_value = header_row_from_db if header_row_from_db is not None else find_header_row_index(local_filename, logger_instance) or 0
+        header_row_value = header_row_from_db if header_row_from_db is not None else find_header_row_index(local_filename, logger_instance) or 1
         write_excel_msrp(local_filename, temp_images_dir, grouped_data, header_row_value, target_column, row_offset, logger_instance)
 
         processed_file_name = f"{Path(file_name).stem}_msrp_{timestamp}.xlsx"
