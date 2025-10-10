@@ -439,7 +439,11 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
         ws = wb.active
         image_map = {int(Path(f).stem): f for f in Path(temp_dir).iterdir() if f.stem.isdigit()}
 
-        DEFAULT_ROW_HEIGHT_POINTS = ws.row_dimensions.get(header_row + 1, {}).height or 12.75
+        row_dim = ws.row_dimensions.get(header_row + 1)
+        if row_dim is not None and getattr(row_dim, "height", None) is not None:
+            DEFAULT_ROW_HEIGHT_POINTS = row_dim.height
+        else:
+            DEFAULT_ROW_HEIGHT_POINTS = 12.75
         logger_instance.info(f"Using template row height: {DEFAULT_ROW_HEIGHT_POINTS} points from row {header_row + 1}")
 
         row_data_map = {item['ExcelRowID']: item for item in image_data}
