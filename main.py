@@ -439,8 +439,7 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
         ws = wb.active
         image_map = {int(Path(f).stem): f for f in Path(temp_dir).iterdir() if f.stem.isdigit()}
 
-        row_dim = ws.row_dimensions.get(header_row + 1)
-        DEFAULT_ROW_HEIGHT_POINTS = row_dim.height if row_dim and row_dim.height is not None else 12.75
+        DEFAULT_ROW_HEIGHT_POINTS = ws.row_dimensions.get(header_row + 1, {}).height or 12.75
         logger_instance.info(f"Using template row height: {DEFAULT_ROW_HEIGHT_POINTS} points from row {header_row + 1}")
 
         row_data_map = {item['ExcelRowID']: item for item in image_data}
@@ -766,8 +765,8 @@ async def generate_download_file(file_id: str, row_offset: int = 0):
             res.raise_for_status()
             with open(local_filename, "wb") as f:
                 f.write(res.content)
-            
-            write_excel_distro(local_filename, temp_images_dir, grouped_data, header_row, logger_instance, row_offset)
+            write_excel_generic(local_filename, temp_images_dir, header_row, row_offset, logger_instance)
+         
         else:
             logger_instance.info("Starting GENERIC file generation.")
             file_name = os.path.basename(urllib.parse.unquote(file_url))
@@ -779,8 +778,7 @@ async def generate_download_file(file_id: str, row_offset: int = 0):
                 f.write(res.content)
             
             header_row = header_row_from_db if header_row_from_db is not None else find_header_row_index(local_filename, logger_instance) or 0
-            write_excel_generic(local_filename, temp_images_dir, header_row, row_offset, logger_instance)
-
+            write_excel_distro(local_filename, temp_images_dir, grouped_data, header_row, logger_instance, row_offset)
         processed_file_name = f"{Path(file_name).stem}_processed_{timestamp}.xlsx"
         public_url = await upload_file_to_space(local_filename, save_as=f"processed_files/{processed_file_name}", file_id=file_id_int, is_public=True)
         update_file_location_complete(file_id_int, public_url, logger_instance)
