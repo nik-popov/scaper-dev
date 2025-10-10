@@ -437,7 +437,13 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
 
         wb = load_workbook(local_filename)
         ws = wb.active
-        image_map = {int(Path(f).stem): f for f in Path(temp_dir).iterdir() if f.stem.isdigit()}
+        image_map = {}
+        for path_obj in Path(temp_dir).iterdir():
+            if not path_obj.is_file():
+                continue
+            stem = path_obj.stem
+            if stem.isdigit():
+                image_map[int(stem)] = str(path_obj)
 
         row_dim = ws.row_dimensions.get(header_row + 1)
         if row_dim is not None and getattr(row_dim, "height", None) is not None:
@@ -491,45 +497,45 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
 
             ws.row_dimensions[row_num].height = CELL_HEIGHT_POINTS
 
-            if row_id in row_data_map:
-                item = row_data_map[row_id]
-                if row_id in image_map:
-                    image_path = str(image_map[row_id])
-                    if verify_and_process_image(image_path, logger_instance):
-                        img = Image(image_path)
-                        img_height_pixels = img.height if hasattr(img, 'height') else 0
-                        img_width_pixels = img.width if hasattr(img, 'width') else 0
-                        img_height_points = img_height_pixels * 72 / 96
-                        img_width_points = img_width_pixels * 0.132
+            image_path = image_map.get(row_id)
+            if image_path:
+                if verify_and_process_image(image_path, logger_instance):
+                    img = Image(image_path)
+                    img_height_pixels = getattr(img, 'height', 0)
+                    img_width_pixels = getattr(img, 'width', 0)
+                    img_height_points = img_height_pixels * 72 / 96
+                    img_width_points = img_width_pixels * 0.132
 
-                        required_width = img_width_points + PADDING_POINTS * 2
-                        current_width = ws.column_dimensions['A'].width or 8.43
-                        ws.column_dimensions['A'].width = min(CELL_WIDTH_POINTS, max(current_width, required_width))
+                    required_width = img_width_points + PADDING_POINTS * 2
+                    current_width = ws.column_dimensions['A'].width or 8.43
+                    ws.column_dimensions['A'].width = min(CELL_WIDTH_POINTS, max(current_width, required_width))
 
-                        cell_width_pixels = points_to_pixels(ws.column_dimensions['A'].width)
-                        cell_height_pixels = points_to_pixels(CELL_HEIGHT_POINTS)
-                        x_offset_pixels = max(0, (cell_width_pixels - img_width_pixels) / 2)
-                        y_offset_pixels = max(0, (cell_height_pixels - img_height_pixels) / 2)
+                    cell_width_pixels = points_to_pixels(ws.column_dimensions['A'].width)
+                    cell_height_pixels = points_to_pixels(CELL_HEIGHT_POINTS)
+                    x_offset_pixels = max(0, (cell_width_pixels - img_width_pixels) / 2)
+                    y_offset_pixels = max(0, (cell_height_pixels - img_height_pixels) / 2)
 
-                        width_emu = pixels_to_EMU(img_width_pixels)
-                        height_emu = pixels_to_EMU(img_height_pixels)
-                        marker = AnchorMarker(
-                            col=0,
-                            colOff=pixels_to_EMU(x_offset_pixels),
-                            row=max(0, row_num - 1),
-                            rowOff=pixels_to_EMU(y_offset_pixels)
-                        )
-                        img.anchor = OneCellAnchor(_from=marker, ext=XDRPositiveSize2D(width_emu, height_emu))
-                        ws.add_image(img)
-                        logger_instance.info(
-                            f"Added image for Row {row_id} at Excel row {row_num}, "
-                            f"height={CELL_HEIGHT_POINTS} points, width={ws.column_dimensions['A'].width:.2f} points"
-                        )
-                    else:
-                        logger_instance.warning(f"Image processing failed for Row {row_id}, writing metadata only")
+                    width_emu = pixels_to_EMU(img_width_pixels)
+                    height_emu = pixels_to_EMU(img_height_pixels)
+                    marker = AnchorMarker(
+                        col=0,
+                        colOff=pixels_to_EMU(x_offset_pixels),
+                        row=max(0, row_num - 1),
+                        rowOff=pixels_to_EMU(y_offset_pixels)
+                    )
+                    img.anchor = OneCellAnchor(_from=marker, ext=XDRPositiveSize2D(width_emu, height_emu))
+                    ws.add_image(img)
+                    logger_instance.info(
+                        f"Added image for Row {row_id} at Excel row {row_num}, "
+                        f"height={CELL_HEIGHT_POINTS} points, width={ws.column_dimensions['A'].width:.2f} points"
+                    )
                 else:
-                    logger_instance.info(f"No image found for Row {row_id}, writing metadata only")
+                    logger_instance.warning(f"Image processing failed for Row {row_id}, writing metadata only")
+            else:
+                logger_instance.info(f"No image found for Row {row_id}, writing metadata only")
 
+            item = row_data_map.get(row_id)
+            if item:
                 if row_num > header_row + 1:
                     ws[f"B{row_num}"] = item.get('Brand', '')
                     ws[f"D{row_num}"] = item.get('Style', '')
@@ -681,18 +687,42 @@ def write_excel_generic(local_filename: str, temp_dir: str, header_row: int, row
     try:
         wb = load_workbook(local_filename)
         ws = wb.active
-        image_map = {int(Path(f).stem): f for f in os.listdir(temp_dir) if Path(f).stem.isdigit()}
+        temp_path = Path(temp_dir)
+        image_map = {}
+        for path_obj in temp_path.iterdir():
+            if not path_obj.is_file():
+                continue
+            stem = path_obj.stem
+            if stem.isdigit():
+                image_map[int(stem)] = path_obj
 
-        for row_id, image_file in image_map.items():
-            image_path = os.path.join(temp_dir, image_file)
+        base_row = header_row + row_offset + 2
+        for row_id, image_path_obj in sorted(image_map.items()):
+            row_num = base_row + (row_id - 1)
+            if row_num < 1:
+                logger_instance.error(
+                    f"Computed row {row_num} is invalid for row_id={row_id}, header_row={header_row}, row_offset={row_offset}. Skipping."
+                )
+                continue
+
+            if ws.max_row < row_num:
+                for _ in range(ws.max_row + 1, row_num + 1):
+                    ws.append([''] * ws.max_column)
+
+            image_path = str(image_path_obj)
             if verify_and_process_image(image_path, logger_instance):
                 img = Image(image_path)
-                adjusted_row = row_id - header_row + row_offset
-                if adjusted_row < 1:
-                    logger_instance.error(f"Invalid adjusted_row {adjusted_row} for row_id={row_id}, header_row={header_row}, row_offset={row_offset}. Skipping.")
-                    continue
-                img.anchor = f"A{adjusted_row}"
+                img.anchor = f"A{row_num}"
                 ws.add_image(img)
+
+                img_height_pixels = getattr(img, 'height', 0)
+                img_height_points = img_height_pixels * 72 / 96
+                current_height = ws.row_dimensions[row_num].height
+                ws.row_dimensions[row_num].height = max(img_height_points, current_height or 0)
+                logger_instance.info(f"Added image for ExcelRowID {row_id} at Excel row {row_num}")
+            else:
+                logger_instance.warning(f"Image verification failed for ExcelRowID {row_id} at path {image_path}")
+
         logger_instance.info("Setting worksheet view to A1")
         ws.sheet_view.topLeftCell = 'A1'
         wb.save(local_filename)
@@ -786,8 +816,9 @@ async def generate_download_file(file_id: str, row_offset: int = 0):
             with open(local_filename, "wb") as f:
                 f.write(res.content)
             
-            header_row_value = header_row_from_db if header_row_from_db is not None else find_header_row_index(local_filename, logger_instance) or 1
+            header_row_value = header_row_from_db if header_row_from_db is not None else find_header_row_index(local_filename, logger_instance) or 0
             write_excel_generic(local_filename, temp_images_dir, header_row_value, row_offset, logger_instance)
+            
         processed_file_name = f"{Path(file_name).stem}_processed_{timestamp}.xlsx"
         public_url = await upload_file_to_space(local_filename, save_as=f"processed_files/{processed_file_name}", file_id=file_id_int, is_public=True)
         update_file_location_complete(file_id_int, public_url, logger_instance)
