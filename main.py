@@ -697,6 +697,8 @@ def write_excel_generic(local_filename: str, temp_dir: str, header_row: int, row
                 image_map[int(stem)] = path_obj
 
         base_row = header_row + row_offset + 2
+        template_row_dim = ws.row_dimensions.get(header_row + 1)
+        default_row_height = template_row_dim.height if template_row_dim and template_row_dim.height is not None else 12.75
         for row_id, image_path_obj in sorted(image_map.items()):
             row_num = base_row + (row_id - 1)
             if row_num < 1:
@@ -706,8 +708,9 @@ def write_excel_generic(local_filename: str, temp_dir: str, header_row: int, row
                 continue
 
             if ws.max_row < row_num:
+                total_columns = max(ws.max_column, 1)
                 for _ in range(ws.max_row + 1, row_num + 1):
-                    ws.append([''] * ws.max_column)
+                    ws.append([''] * total_columns)
 
             image_path = str(image_path_obj)
             if verify_and_process_image(image_path, logger_instance):
@@ -718,7 +721,7 @@ def write_excel_generic(local_filename: str, temp_dir: str, header_row: int, row
                 img_height_pixels = getattr(img, 'height', 0)
                 img_height_points = img_height_pixels * 72 / 96
                 current_height = ws.row_dimensions[row_num].height
-                ws.row_dimensions[row_num].height = max(img_height_points, current_height or 0)
+                ws.row_dimensions[row_num].height = max(img_height_points, current_height or default_row_height)
                 logger_instance.info(f"Added image for ExcelRowID {row_id} at Excel row {row_num}")
             else:
                 logger_instance.warning(f"Image verification failed for ExcelRowID {row_id} at path {image_path}")
