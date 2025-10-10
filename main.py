@@ -787,8 +787,8 @@ async def generate_download_file(file_id: str, row_offset: int = 0):
             with open(local_filename, "wb") as f:
                 f.write(res.content)
             
-            header_row = header_row_from_db if header_row_from_db is not None else find_header_row_index(local_filename, logger_instance) or 0
-            write_excel_distro(local_filename, temp_images_dir, grouped_data, header_row, logger_instance, row_offset)
+            header_row_value = header_row_from_db if header_row_from_db is not None else find_header_row_index(local_filename, logger_instance) or 0
+            write_excel_distro(local_filename, temp_images_dir, grouped_data, header_row_value, logger_instance, row_offset)
         processed_file_name = f"{Path(file_name).stem}_processed_{timestamp}.xlsx"
         public_url = await upload_file_to_space(local_filename, save_as=f"processed_files/{processed_file_name}", file_id=file_id_int, is_public=True)
         update_file_location_complete(file_id_int, public_url, logger_instance)
