@@ -765,12 +765,18 @@ async def generate_download_file(file_id: str, row_offset: int = 0):
             local_filename = os.path.join(temp_excel_dir, file_name)
             header_row = 5  # Hardcoded for DISTRO (0-based)
 
+            if row_offset:
+                logger_instance.info(
+                    f"Ignoring provided row_offset={row_offset} for DISTRO template; using fixed layout."
+                )
+            template_row_offset = 0
+
             res = requests.get(template_url, timeout=60)
             res.raise_for_status()
             with open(local_filename, "wb") as f:
                 f.write(res.content)
-            write_excel_generic(local_filename, temp_images_dir, header_row, row_offset, logger_instance)
-         
+
+            write_excel_distro(local_filename, temp_images_dir, grouped_data, header_row, logger_instance, row_offset)
         else:
             logger_instance.info("Starting GENERIC file generation.")
             file_name = os.path.basename(urllib.parse.unquote(file_url))
@@ -782,7 +788,7 @@ async def generate_download_file(file_id: str, row_offset: int = 0):
                 f.write(res.content)
             
             header_row = header_row_from_db if header_row_from_db is not None else find_header_row_index(local_filename, logger_instance) or 0
-            write_excel_distro(local_filename, temp_images_dir, grouped_data, header_row, logger_instance, row_offset)
+            write_excel_generic(local_filename, temp_images_dir, header_row, template_row_offset, logger_instance)
         processed_file_name = f"{Path(file_name).stem}_processed_{timestamp}.xlsx"
         public_url = await upload_file_to_space(local_filename, save_as=f"processed_files/{processed_file_name}", file_id=file_id_int, is_public=True)
         update_file_location_complete(file_id_int, public_url, logger_instance)
@@ -859,7 +865,6 @@ async def generate_msrp_excel(file_id: str, target_column: str, row_offset: int 
             f.write(res.content)
         
         header_row = header_row_from_db if header_row_from_db is not None else find_header_row_index(local_filename, logger_instance) or 0
-        header_row = int(header_row)
         write_excel_msrp(local_filename, temp_images_dir, grouped_data, header_row, target_column, row_offset, logger_instance)
 
         processed_file_name = f"{Path(file_name).stem}_msrp_{timestamp}.xlsx"
