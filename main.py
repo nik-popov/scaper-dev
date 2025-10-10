@@ -439,26 +439,38 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
         ws = wb.active
         image_map = {int(Path(f).stem): f for f in Path(temp_dir).iterdir() if f.stem.isdigit()}
 
-        DEFAULT_ROW_HEIGHT_POINTS = ws.row_dimensions.get(header_row + 1, {}).height or 12.75
+        row_dim = ws.row_dimensions.get(header_row + 1)
+        DEFAULT_ROW_HEIGHT_POINTS = row_dim.height if row_dim and row_dim.height is not None else 12.75
         logger_instance.info(f"Using template row height: {DEFAULT_ROW_HEIGHT_POINTS} points from row {header_row + 1}")
 
         row_data_map = {item['ExcelRowID']: item for item in image_data}
         last_non_empty_row = get_last_non_empty_row(ws, column='B', header_row=header_row, logger_instance=logger_instance)
 
-        if image_data:
-            min_row_id = min(item['ExcelRowID'] for item in image_data)
-            max_row_id = max(item['ExcelRowID'] for item in image_data)
-            max_row_id = max(max_row_id, last_non_empty_row - header_row)
-            logger_instance.info(f"Row range: ExcelRowID {min_row_id} to {max_row_id}, adjusted for template last row {last_non_empty_row}")
+        data_row_ids = sorted(row_data_map.keys())
+        if data_row_ids:
+            min_row_id = data_row_ids[0]
+            max_row_id = data_row_ids[-1]
         else:
             min_row_id = 1
-            max_row_id = last_non_empty_row - header_row if last_non_empty_row > header_row else 1
-            logger_instance.warning(f"No data in image_data, setting range based on template last row {last_non_empty_row}")
+            relative_last_row = last_non_empty_row - (header_row + 1)
+            relative_last_row = max(1, relative_last_row)
+            max_row_id = relative_last_row
+            logger_instance.warning(
+                f"No data in image_data, deriving row range 1-{max_row_id} from template last row {last_non_empty_row}"
+            )
 
-        max_needed_row = (max_row_id - header_row) + row_offset
-        if max_needed_row < 1:
-            logger_instance.error(f"max_needed_row {max_needed_row} is less than 1. Aborting.")
-            raise ValueError("Invalid row range: max_needed_row is less than 1")
+        base_row = header_row + row_offset + 2
+        if base_row < 1:
+            logger_instance.error(f"Computed base_row {base_row} is less than 1. Aborting.")
+            raise ValueError("Invalid row range: base_row is less than 1")
+
+        total_rows_needed = max(0, max_row_id - min_row_id + 1)
+        max_needed_row = base_row + max(0, total_rows_needed - 1)
+        max_needed_row = max(max_needed_row, last_non_empty_row)
+        logger_instance.info(
+            f"Row mapping summary -> base_row: {base_row}, min_row_id: {min_row_id}, max_row_id: {max_row_id}, "
+            f"total_rows_needed: {total_rows_needed}, max_needed_row: {max_needed_row}"
+        )
 
         if ws.max_row < max_needed_row:
             logger_instance.info(f"Appending {max_needed_row - ws.max_row} rows to worksheet")
@@ -471,17 +483,15 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
         PADDING_POINTS = 5
 
         for row_id in range(min_row_id, max_row_id + 1):
-            row_num = (row_id - header_row) + row_offset
-            if row_num < 1:
-                logger_instance.error(f"Invalid row_num {row_num} for row_id={row_id}, header_row={header_row}, row_offset={row_offset}. Skipping.")
-                continue
+            row_position = row_id - min_row_id
+            row_num = base_row + row_position
 
             ws.row_dimensions[row_num].height = CELL_HEIGHT_POINTS
 
             if row_id in row_data_map:
                 item = row_data_map[row_id]
                 if row_id in image_map:
-                    image_path = str(Path(temp_dir) / image_map[row_id])
+                    image_path = str(image_map[row_id])
                     if verify_and_process_image(image_path, logger_instance):
                         img = Image(image_path)
                         img_height_pixels = img.height if hasattr(img, 'height') else 0
@@ -517,7 +527,7 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                 else:
                     logger_instance.info(f"No image found for Row {row_id}, writing metadata only")
 
-                if row_num > header_row:
+                if row_num > header_row + 1:
                     ws[f"B{row_num}"] = item.get('Brand', '')
                     ws[f"D{row_num}"] = item.get('Style', '')
                     ws[f"E{row_num}"] = item.get('Color', '')
@@ -526,7 +536,7 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                 else:
                     logger_instance.warning(f"Skipping metadata write for row {row_num} as it is the header row")
             else:
-                if row_num > header_row:
+                if row_num > header_row + 1:
                     ws[f"B{row_num}"] = ''
                     ws[f"D{row_num}"] = ''
                     ws[f"E{row_num}"] = ''
@@ -590,20 +600,31 @@ def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict],
         row_data_map = {item['ExcelRowID']: item for item in image_data}
         last_non_empty_row = get_last_non_empty_row(ws, column='B', header_row=header_row, logger_instance=logger_instance)
 
-        if image_data:
-            min_row_id = min(item['ExcelRowID'] for item in image_data)
-            max_row_id = max(item['ExcelRowID'] for item in image_data)
-            max_row_id = max(max_row_id, last_non_empty_row - header_row)
-            logger_instance.info(f"Row range: ExcelRowID {min_row_id} to {max_row_id}, adjusted for template last row {last_non_empty_row}")
+        data_row_ids = sorted(row_data_map.keys())
+        if data_row_ids:
+            min_row_id = data_row_ids[0]
+            max_row_id = data_row_ids[-1]
         else:
             min_row_id = 1
-            max_row_id = last_non_empty_row - header_row if last_non_empty_row > header_row else 1
-            logger_instance.warning(f"No data in image_data, setting range based on template last row {last_non_empty_row}")
+            relative_last_row = last_non_empty_row - (header_row + 1)
+            relative_last_row = max(1, relative_last_row)
+            max_row_id = relative_last_row
+            logger_instance.warning(
+                f"No data in image_data, deriving row range 1-{max_row_id} from template last row {last_non_empty_row}"
+            )
 
-        max_needed_row = (max_row_id - header_row) + row_offset
-        if max_needed_row < 1:
-            logger_instance.error(f"max_needed_row {max_needed_row} is less than 1. Aborting.")
-            raise ValueError("Invalid row range: max_needed_row is less than 1")
+        base_row = header_row + row_offset + 2
+        if base_row < 1:
+            logger_instance.error(f"Computed base_row {base_row} is less than 1. Aborting.")
+            raise ValueError("Invalid row range: base_row is less than 1")
+
+        total_rows_needed = max(0, max_row_id - min_row_id + 1)
+        max_needed_row = base_row + max(0, total_rows_needed - 1)
+        max_needed_row = max(max_needed_row, last_non_empty_row)
+        logger_instance.info(
+            f"Row mapping summary -> base_row: {base_row}, min_row_id: {min_row_id}, max_row_id: {max_row_id}, "
+            f"total_rows_needed: {total_rows_needed}, max_needed_row: {max_needed_row}"
+        )
 
         if ws.max_row < max_needed_row:
             logger_instance.info(f"Appending {max_needed_row - ws.max_row} rows to worksheet")
@@ -612,10 +633,8 @@ def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict],
                 ws.row_dimensions[row_num].height = DEFAULT_ROW_HEIGHT_POINTS
 
         for row_id in range(min_row_id, max_row_id + 1):
-            row_num = (row_id - header_row) + row_offset
-            if row_num < 1:
-                logger_instance.error(f"Invalid row_num {row_num} for row_id={row_id}, header_row={header_row}, row_offset={row_offset}. Skipping.")
-                continue
+            row_position = row_id - min_row_id
+            row_num = base_row + row_position
 
             ws.row_dimensions[row_num].height = DEFAULT_ROW_HEIGHT_POINTS
 
