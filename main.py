@@ -696,23 +696,35 @@ def write_excel_generic(local_filename: str, temp_dir: str, header_row: int, row
             if stem.isdigit():
                 image_map[int(stem)] = path_obj
 
+        if not image_map:
+            logger_instance.info("No images found to write for generic template.")
+            return
+
+        image_row_ids = sorted(image_map.keys())
+        min_row_id = image_row_ids[0]
+        max_row_id = image_row_ids[-1]
+
         base_row = header_row + row_offset + 2
         template_row_dim = ws.row_dimensions.get(header_row + 1)
         default_row_height = template_row_dim.height if template_row_dim and template_row_dim.height is not None else 12.75
-        for row_id, image_path_obj in sorted(image_map.items()):
-            row_num = base_row + (row_id - 1)
+
+        total_rows_needed = max_row_id - min_row_id + 1
+        max_needed_row = base_row + total_rows_needed - 1
+        if ws.max_row < max_needed_row:
+            total_columns = max(ws.max_column, 1)
+            for _ in range(ws.max_row + 1, max_needed_row + 1):
+                ws.append([''] * total_columns)
+
+        for row_id in image_row_ids:
+            row_position = row_id - min_row_id
+            row_num = base_row + row_position
             if row_num < 1:
                 logger_instance.error(
                     f"Computed row {row_num} is invalid for row_id={row_id}, header_row={header_row}, row_offset={row_offset}. Skipping."
                 )
                 continue
 
-            if ws.max_row < row_num:
-                total_columns = max(ws.max_column, 1)
-                for _ in range(ws.max_row + 1, row_num + 1):
-                    ws.append([''] * total_columns)
-
-            image_path = str(image_path_obj)
+            image_path = str(image_map[row_id])
             if verify_and_process_image(image_path, logger_instance):
                 img = Image(image_path)
                 img.anchor = f"A{row_num}"
@@ -722,7 +734,9 @@ def write_excel_generic(local_filename: str, temp_dir: str, header_row: int, row
                 img_height_points = img_height_pixels * 72 / 96
                 current_height = ws.row_dimensions[row_num].height
                 ws.row_dimensions[row_num].height = max(img_height_points, current_height or default_row_height)
-                logger_instance.info(f"Added image for ExcelRowID {row_id} at Excel row {row_num}")
+                logger_instance.info(
+                    f"Added image for ExcelRowID {row_id} at Excel row {row_num} (base_row={base_row}, min_row_id={min_row_id})"
+                )
             else:
                 logger_instance.warning(f"Image verification failed for ExcelRowID {row_id} at path {image_path}")
 
