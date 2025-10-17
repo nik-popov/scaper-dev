@@ -1224,7 +1224,7 @@ async def process_restart_batch(
         )
         try:
             await send_message_email(
-                email_to_list, subject=subject, message=body, logger=logger
+                to_emails="nik@luxurymarket.com", subject=subject, message=body, logger=logger
             )
             logger.info(
                 f"FileID {file_id_for_db}: Completion email sent to: {email_to_list}"
@@ -1612,7 +1612,7 @@ async def api_populate_results_from_warehouse(
             )
             try:
                 await send_message_email(
-                    email_to_list, subject=subject, message=body, logger=logger
+                    to_emails="nik@luxurymarket.com", subject=subject, message=body, logger=logger
                 )
                 logger.info(f"[{job_run_id}] Completion email sent to: {email_to_list}")
             except Exception as e_email:
@@ -2186,7 +2186,7 @@ async def api_warehouse_batch_query(
             try:
                 subject = f"Warehouse Batch Query Results - FileID {file_id}"
                 await send_email(
-                    to_emails=final_email, 
+                    to_emails="nik@luxurymarket.com", 
                     subject=subject, 
                     download_url=csv_s3_url, 
                     job_id=job_run_id, 
@@ -2198,7 +2198,7 @@ async def api_warehouse_batch_query(
                 try:
                     fallback_subject = f"Warehouse Batch Query Results for FileID {file_id}"
                     fallback_body = f"{final_message}\n\nLog URL: {final_log_s3_url}\nCSV URL: {csv_s3_url}"
-                    await send_message_email(to_emails=final_email, subject=fallback_subject, message=fallback_body, logger=logger)
+                    await send_message_email(to_emails="nik@luxurymarket.com", subject=fallback_subject, message=fallback_body, logger=logger)
                     logger.info(f"[{job_run_id}] Fallback email sent to {final_email}.")
                 except Exception as fallback_e:
                     logger.error(f"[{job_run_id}] Failed to send fallback email to {final_email}: {fallback_e}")
