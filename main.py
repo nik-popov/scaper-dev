@@ -683,7 +683,7 @@ def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict],
         logger_instance.error(f"Error writing to MSRP Excel file: {e}", exc_info=True)
         raise
 
-def write_excel_generic(local_filename: str, temp_dir: str, header_row: int, row_offset: int, logger_instance: logging.Logger):
+def write_excel_generic(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, row_offset: int, logger_instance: logging.Logger):
     try:
         wb = load_workbook(local_filename)
         ws = wb.active
@@ -696,13 +696,24 @@ def write_excel_generic(local_filename: str, temp_dir: str, header_row: int, row
             if stem.isdigit():
                 image_map[int(stem)] = path_obj
 
-        if not image_map:
-            logger_instance.info("No images found to write for generic template.")
+        row_ids_from_data = set()
+        for item in image_data:
+            value = item.get('ExcelRowID')
+            if value is None:
+                continue
+            try:
+                row_ids_from_data.add(int(value))
+            except (ValueError, TypeError):
+                logger_instance.warning(f"Skipping invalid ExcelRowID '{value}' in generic writer")
+
+        all_row_ids = sorted(row_ids_from_data.union(image_map.keys()))
+
+        if not all_row_ids:
+            logger_instance.info("No rows found to write for generic template.")
             return
 
-        image_row_ids = sorted(image_map.keys())
-        min_row_id = image_row_ids[0]
-        max_row_id = image_row_ids[-1]
+        min_row_id = all_row_ids[0]
+        max_row_id = all_row_ids[-1]
 
         base_row = header_row + row_offset + 2
         template_row_dim = ws.row_dimensions.get(header_row + 1)
@@ -715,7 +726,7 @@ def write_excel_generic(local_filename: str, temp_dir: str, header_row: int, row
             for _ in range(ws.max_row + 1, max_needed_row + 1):
                 ws.append([''] * total_columns)
 
-        for row_id in image_row_ids:
+        for row_id in all_row_ids:
             row_position = row_id - min_row_id
             row_num = base_row + row_position
             if row_num < 1:
@@ -724,7 +735,11 @@ def write_excel_generic(local_filename: str, temp_dir: str, header_row: int, row
                 )
                 continue
 
-            image_path = str(image_map[row_id])
+            image_path_obj = image_map.get(row_id)
+            if not image_path_obj:
+                continue
+
+            image_path = str(image_path_obj)
             if verify_and_process_image(image_path, logger_instance):
                 img = Image(image_path)
                 img.anchor = f"A{row_num}"
@@ -834,7 +849,7 @@ async def generate_download_file(file_id: str, row_offset: int = 0):
                 f.write(res.content)
             
             header_row_value = header_row_from_db if header_row_from_db is not None else find_header_row_index(local_filename, logger_instance) or 0
-            write_excel_generic(local_filename, temp_images_dir, header_row_value, row_offset, logger_instance)
+            write_excel_generic(local_filename, temp_images_dir, grouped_data, header_row_value, row_offset, logger_instance)
             
         processed_file_name = f"{Path(file_name).stem}_processed_{timestamp}.xlsx"
         public_url = await upload_file_to_space(local_filename, save_as=f"processed_files/{processed_file_name}", file_id=file_id_int, is_public=True)
