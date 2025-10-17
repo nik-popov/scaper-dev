@@ -715,24 +715,48 @@ def write_excel_generic(local_filename: str, temp_dir: str, image_data: List[Dic
         min_row_id = all_row_ids[0]
         max_row_id = all_row_ids[-1]
 
-        base_row = header_row + row_offset + 2
         template_row_dim = ws.row_dimensions.get(header_row + 1)
         default_row_height = template_row_dim.height if template_row_dim and template_row_dim.height is not None else 12.75
 
-        total_rows_needed = max_row_id - min_row_id + 1
-        max_needed_row = base_row + total_rows_needed - 1
-        if ws.max_row < max_needed_row:
-            total_columns = max(ws.max_column, 1)
-            for _ in range(ws.max_row + 1, max_needed_row + 1):
-                ws.append([''] * total_columns)
+        header_excel_row = max(header_row, 0) + 1
+        use_absolute_row_ids = min_row_id > header_excel_row
+        if use_absolute_row_ids:
+            logger_instance.info(
+                f"Detected absolute ExcelRowID values (min_row_id={min_row_id}, header_excel_row={header_excel_row})."
+            )
+        else:
+            logger_instance.info(
+                f"Using relative ExcelRowID mapping (min_row_id={min_row_id}, header_excel_row={header_excel_row})."
+            )
 
+        row_num_map: Dict[int, int] = {}
+        total_columns = max(ws.max_column, 1)
+        relative_base_row = header_row + row_offset + 2
         for row_id in all_row_ids:
-            row_position = row_id - min_row_id
-            row_num = base_row + row_position
+            if use_absolute_row_ids:
+                row_num = row_id + row_offset
+            else:
+                row_num = relative_base_row + (row_id - min_row_id)
+
             if row_num < 1:
                 logger_instance.error(
                     f"Computed row {row_num} is invalid for row_id={row_id}, header_row={header_row}, row_offset={row_offset}. Skipping."
                 )
+                continue
+            row_num_map[row_id] = row_num
+
+        if not row_num_map:
+            logger_instance.warning("No valid row mappings computed for generic template. Nothing to write.")
+            return
+
+        max_needed_row = max(row_num_map.values())
+        if ws.max_row < max_needed_row:
+            for _ in range(ws.max_row + 1, max_needed_row + 1):
+                ws.append([''] * total_columns)
+
+        for row_id in all_row_ids:
+            row_num = row_num_map.get(row_id)
+            if row_num is None:
                 continue
 
             image_path_obj = image_map.get(row_id)
@@ -749,8 +773,9 @@ def write_excel_generic(local_filename: str, temp_dir: str, image_data: List[Dic
                 img_height_points = img_height_pixels * 72 / 96
                 current_height = ws.row_dimensions[row_num].height
                 ws.row_dimensions[row_num].height = max(img_height_points, current_height or default_row_height)
+
                 logger_instance.info(
-                    f"Added image for ExcelRowID {row_id} at Excel row {row_num} (base_row={base_row}, min_row_id={min_row_id})"
+                    f"Added image for ExcelRowID {row_id} at Excel row {row_num} (absolute_mapping={use_absolute_row_ids})"
                 )
             else:
                 logger_instance.warning(f"Image verification failed for ExcelRowID {row_id} at path {image_path}")
@@ -847,8 +872,27 @@ async def generate_download_file(file_id: str, row_offset: int = 0):
             res.raise_for_status()
             with open(local_filename, "wb") as f:
                 f.write(res.content)
-            
-            header_row_value = header_row_from_db if header_row_from_db is not None else find_header_row_index(local_filename, logger_instance) or 0
+
+            inferred_header_row = find_header_row_index(local_filename, logger_instance)
+            if header_row_from_db is not None:
+                try:
+                    db_header = int(header_row_from_db)
+                except (TypeError, ValueError):
+                    logger_instance.warning(f"Invalid header_row_from_db '{header_row_from_db}'. Falling back to inferred value.")
+                    db_header = None
+
+                if db_header is not None:
+                    candidates = {max(0, db_header - 1), max(0, db_header)}
+                    if inferred_header_row is not None:
+                        header_row_value = min(candidates, key=lambda c: abs(c - inferred_header_row))
+                    else:
+                        header_row_value = min(candidates)
+                else:
+                    header_row_value = inferred_header_row if inferred_header_row is not None else 0
+            else:
+                header_row_value = inferred_header_row if inferred_header_row is not None else 0
+
+            logger_instance.info(f"Using header_row_value={header_row_value} for generic template.")
             write_excel_generic(local_filename, temp_images_dir, grouped_data, header_row_value, row_offset, logger_instance)
             
         processed_file_name = f"{Path(file_name).stem}_processed_{timestamp}.xlsx"
@@ -925,8 +969,27 @@ async def generate_msrp_excel(file_id: str, target_column: str, row_offset: int 
         res.raise_for_status()
         with open(local_filename, "wb") as f:
             f.write(res.content)
-        
-        header_row_value = header_row_from_db if header_row_from_db is not None else find_header_row_index(local_filename, logger_instance) or 0
+
+        inferred_header_row = find_header_row_index(local_filename, logger_instance)
+        if header_row_from_db is not None:
+            try:
+                db_header = int(header_row_from_db)
+            except (TypeError, ValueError):
+                logger_instance.warning(f"Invalid header_row_from_db '{header_row_from_db}'. Falling back to inferred value.")
+                db_header = None
+
+            if db_header is not None:
+                candidates = {max(0, db_header - 1), max(0, db_header)}
+                if inferred_header_row is not None:
+                    header_row_value = min(candidates, key=lambda c: abs(c - inferred_header_row))
+                else:
+                    header_row_value = min(candidates)
+            else:
+                header_row_value = inferred_header_row if inferred_header_row is not None else 0
+        else:
+            header_row_value = inferred_header_row if inferred_header_row is not None else 0
+
+        logger_instance.info(f"Using header_row_value={header_row_value} for MSRP template.")
         write_excel_msrp(local_filename, temp_images_dir, grouped_data, header_row_value, target_column, row_offset, logger_instance)
 
         processed_file_name = f"{Path(file_name).stem}_msrp_{timestamp}.xlsx"
