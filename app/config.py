@@ -36,7 +36,7 @@ class AESCipher(object):
 
 # Initialize AES cipher (you'll need to provide the encryption key)
 # For security, consider getting this key from environment variables or secure storage
-ENCRYPTION_KEY = "your_encryption_key_here"  # Replace with actual key
+ENCRYPTION_KEY = "f5319e962b4149fdaac19ecb37ba0d5d"  # Replace with actual key
 cipher = AESCipher(ENCRYPTION_KEY)
 
 # Function to safely decrypt config values
