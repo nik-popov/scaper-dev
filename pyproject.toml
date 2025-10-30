@@ -39,6 +39,7 @@ dependencies = [
     "aiormq==6.8.1",
     "spacy==3.7.5",
     "ImageHash==4.3.2",
+    "pycryptodome==3.23.0",
 
     
 ]

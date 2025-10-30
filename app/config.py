@@ -33,9 +33,7 @@ class AESCipher(object):
     @staticmethod
     def _unpad(s):
         return s[:-ord(s[len(s)-1:])]
-
-# Initialize AES cipher (you'll need to provide the encryption key)
-# For security, consider getting this key from environment variables or secure storage
+    
 ENCRYPTION_KEY = "f5319e962b4149fdaac19ecb37ba0d5d"  # Replace with actual key
 cipher = AESCipher(ENCRYPTION_KEY)
 
