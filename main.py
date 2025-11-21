@@ -47,7 +47,7 @@ MAX_IMAGE_DIMENSION = 130  # For resizing
 MIN_DIMENSION_FOR_BORDER = 10  # Minimum dimension to attempt border removal
 BORDER_CROP_WIDTH = 5  # Pixels to check for border on each side
 BORDER_UNIFORMITY_THRESHOLD = 0.05  # 5% of pixels must match dominant color
-BORDER_COLOR_TOLERANCE = 60  # RGB tolerance for border color matching (Increased further for grey backgrounds)
+BORDER_COLOR_TOLERANCE = 10  # RGB tolerance for border color matching
 EMU_PER_PIXEL = 9525  # EMUs per pixel at 96 DPI
 def points_to_pixels(points):
     """Convert points to pixels assuming 96 DPI (1 point = 1.333 pixels)."""
@@ -390,7 +390,7 @@ def process_image_remove_lines(image_path: str, img: PILImage.Image, logger_inst
                 dominant_fraction = counts.max() / total_border_pixels
                 
                 # Check if border is light and sufficiently uniform
-                if np.sum(dominant_color) > 450 and dominant_fraction > BORDER_UNIFORMITY_THRESHOLD:
+                if np.sum(dominant_color) > 750 and dominant_fraction > BORDER_UNIFORMITY_THRESHOLD:
                     # Create mask for border areas only
                     mask = np.zeros((cleaned_height, cleaned_width), dtype=bool)
                     mask[:BORDER_CROP_WIDTH, :] = np.all(np.abs(pixels[:BORDER_CROP_WIDTH, :, :] - dominant_color) <= BORDER_COLOR_TOLERANCE, axis=2)
