@@ -47,7 +47,7 @@ MAX_IMAGE_DIMENSION = 130  # For resizing
 MIN_DIMENSION_FOR_BORDER = 10  # Minimum dimension to attempt border removal
 BORDER_CROP_WIDTH = 5  # Pixels to check for border on each side
 BORDER_UNIFORMITY_THRESHOLD = 0.05  # 5% of pixels must match dominant color
-BORDER_COLOR_TOLERANCE = 10  # RGB tolerance for border color matching
+BORDER_COLOR_TOLERANCE = 35  # RGB tolerance for border color matching (Increased to prevent patchy removal)
 EMU_PER_PIXEL = 9525  # EMUs per pixel at 96 DPI
 def points_to_pixels(points):
     """Convert points to pixels assuming 96 DPI (1 point = 1.333 pixels)."""
