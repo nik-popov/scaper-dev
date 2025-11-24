@@ -361,7 +361,7 @@ def process_image_remove_lines(image_path: str, img: PILImage.Image, logger_inst
 
         # Check if cropped image is too small
         cleaned_height, cleaned_width, _ = arr.shape
-        min_dim = 50
+        min_dim = 20
         if (row_cropped or col_cropped) and (cleaned_height < min_dim or cleaned_width < min_dim):
             logger_instance.warning(f"Cropped image too small ({cleaned_height}x{cleaned_width}) for {image_path}. Using original.")
             return img
