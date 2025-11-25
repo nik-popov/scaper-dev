@@ -899,7 +899,7 @@ async def generate_download_file(file_id: str, row_offset: int = 0):
             logger_instance.info(f"Using header_row_value={header_row_value} for generic template.")
             write_excel_generic(local_filename, temp_images_dir, grouped_data, header_row_value, row_offset, logger_instance)
             
-        processed_file_name = f"{Path(original_file_name).stem}_processed_{file_type_id}_{timestamp}.xlsx"
+        processed_file_name = f"{Path(original_file_name).stem}_ptype-{file_type_id}_{timestamp}.xlsx"
         public_url = await upload_file_to_space(local_filename, save_as=f"processed_files/{processed_file_name}", file_id=file_id_int, is_public=True)
         update_file_location_complete(file_id_int, public_url, logger_instance)
         await send_email(
