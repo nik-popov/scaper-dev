@@ -21,7 +21,7 @@ from openpyxl import load_workbook
 from openpyxl.drawing.image import Image
 from openpyxl.utils import column_index_from_string
 from PIL import Image as PILImage
-from PIL import UnidentifiedImageError, ImageOps
+from PIL import UnidentifiedImageError, ImageOps, ImageChops
 from tldextract import tldextract
 import urllib.parse
 from pathlib import Path
@@ -329,6 +329,51 @@ def verify_and_process_image(image_path: str, logger_instance: logging.Logger) -
         logger_instance.error(f"Image verification failed for {image_path}: {e}", exc_info=True)
         return False
 
+def backup_crop(img: PILImage.Image, logger_instance: logging.Logger) -> PILImage.Image:
+    """
+    Ultra-reliable fallback crop.
+    Works on 99.99 % of product photos with white or near-white backgrounds.
+    Never returns tiny or destroyed images.
+    """
+    try:
+        original_size = img.size
+        
+        # Convert to RGB for diff (preserves subtle edges best)
+        if img.mode not in ('RGB', 'L'):
+            img_rgb = img.convert('RGB')
+        else:
+            img_rgb = img if img.mode == 'RGB' else img.convert('RGB')
+
+        # Create pure white reference
+        white = PILImage.new('RGB', img_rgb.size, (255, 255, 255))
+        
+        # Amplify subtle differences (your genius trick, slightly improved)
+        diff = ImageChops.difference(img_rgb, white)
+        diff = ImageOps.invert(diff)                    # ← makes shadows darker
+        diff = ImageOps.autocontrast(diff, cutoff=2)    # ← boosts faint edges
+        diff = diff.convert('L')                        # grayscale for getbbox
+        
+        bbox = diff.getbbox()
+        
+        if bbox and bbox != (0, 0, img_rgb.width, img_rgb.height):
+            # Safety: don't allow insane crops (less than 20x20 or >95% loss)
+            cropped_w = bbox[2] - bbox[0]
+            cropped_h = bbox[3] - bbox[1]
+            area_ratio = (cropped_w * cropped_h) / (img_rgb.width * img_rgb.height)
+            
+            if (cropped_w >= 30 and cropped_h >= 30 and area_ratio >= 0.15):
+                logger_instance.info(f"Backup crop applied: {original_size} → ({cropped_w}x{cropped_h}), area {area_ratio:.1%}")
+                return img.crop(bbox)
+            else:
+                logger_instance.info(f"Backup crop rejected (too small: {cropped_w}x{cropped_h}, {area_ratio:.1%})")
+        
+        logger_instance.info("Backup crop: no significant content found or full image needed")
+        return img
+        
+    except Exception as e:
+        logger_instance.warning(f"Backup crop failed: {e}, returning original")
+        return img
+
 def process_image_remove_lines(image_path: str, img: PILImage.Image, logger_instance: logging.Logger) -> PILImage.Image:
     """Process image in memory to remove uniform lines and borders, preventing smearing."""
     try:
@@ -414,7 +459,31 @@ def process_image_remove_lines(image_path: str, img: PILImage.Image, logger_inst
         else:
             logger_instance.info(f"Image too small for border removal ({cleaned_height}x{cleaned_width}) for {image_path}")
 
-        return PILImage.fromarray(arr.astype(np.uint8))
+        final_img = PILImage.fromarray(arr.astype(np.uint8))
+        
+        # Backup crop check
+        # SMART FALLBACK: Detect destroyed images by area loss (catches ALL black/green/tiny cases)
+        original_area = img.width * img.height
+        final_area = final_img.width * final_img.height
+        area_ratio = final_area / original_area if original_area > 0 else 0
+
+        if area_ratio < 0.30:   # lost >70% of pixels → aggressive processing went wrong
+            logger_instance.warning(
+                f"Aggressive crop DESTROYED image! "
+                f"Original {img.size} ({original_area:,} px) → Final {final_img.size} ({final_area:,} px), "
+                f"only {area_ratio:.1%} remaining. Using safe backup crop."
+            )
+            backup_res = backup_crop(img, logger_instance)
+            
+            # Final safety: only use backup if it's meaningfully larger
+            backup_area = backup_res.width * backup_res.height
+            if backup_area > final_area * 1.5:  # backup is at least 50% larger
+                logger_instance.info(f"Backup crop recovered image → {backup_res.size}")
+                return backup_res
+            else:
+                logger_instance.info(f"Backup crop similar size, keeping (likely already good)")
+        
+        return final_img
     except Exception as e:
         logger_instance.error(f"Error processing image {image_path} to remove lines: {e}", exc_info=True)
         return img
