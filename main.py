@@ -587,12 +587,12 @@ def find_header_row_index(excel_file: str, logger_instance: logging.Logger) -> O
         logger_instance.error(f"Could not find header row: {e}")
         return None
 
-def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, target_column: str, row_offset: int, logger_instance: logging.Logger):
+def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, target_column: str, row_offset: int, logger_instance: logging.Logger, populate_images: bool = True, populate_msrp: bool = True):
     try:
         wb = load_workbook(local_filename)
         ws = wb.active
         image_map = {int(Path(f).stem): f for f in os.listdir(temp_dir) if Path(f).stem.isdigit()}
-        if not re.match(r'^[A-Z]+$', target_column):
+        if populate_msrp and not re.match(r'^[A-Z]+$', target_column):
             raise ValueError(f"Invalid target_column: {target_column}. Must be a valid Excel column letter (e.g., 'A', 'B', 'AA').")
 
         header_row = int(header_row)
@@ -649,27 +649,30 @@ def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict],
 
             if row_id in row_data_map:
                 item = row_data_map[row_id]
-                if row_id in image_map:
-                    image_path = os.path.join(temp_dir, image_map[row_id])
-                    if verify_and_process_image(image_path, logger_instance):
-                        img = Image(image_path)
-                        img.anchor = f"A{row_num}"
-                        ws.add_image(img)
-                        img_height_pixels = img.height if hasattr(img, 'height') else 0
-                        img_height_points = img_height_pixels * 72 / 96
-                        ws.row_dimensions[row_num].height = max(DEFAULT_ROW_HEIGHT_POINTS, img_height_points)
-                        logger_instance.info(f"Added image for Row {row_id} at Excel row {row_num}, height set to {ws.row_dimensions[row_num].height} points")
+                if populate_images:
+                    if row_id in image_map:
+                        image_path = os.path.join(temp_dir, image_map[row_id])
+                        if verify_and_process_image(image_path, logger_instance):
+                            img = Image(image_path)
+                            img.anchor = f"A{row_num}"
+                            ws.add_image(img)
+                            img_height_pixels = img.height if hasattr(img, 'height') else 0
+                            img_height_points = img_height_pixels * 72 / 96
+                            ws.row_dimensions[row_num].height = max(DEFAULT_ROW_HEIGHT_POINTS, img_height_points)
+                            logger_instance.info(f"Added image for Row {row_id} at Excel row {row_num}, height set to {ws.row_dimensions[row_num].height} points")
+                        else:
+                            logger_instance.warning(f"Image processing failed for Row {row_id}, writing MSRP only")
                     else:
-                        logger_instance.warning(f"Image processing failed for Row {row_id}, writing MSRP only")
-                else:
-                    logger_instance.info(f"No image found for Row {row_id}, writing MSRP only")
+                        logger_instance.info(f"No image found for Row {row_id}, writing MSRP only")
 
-                msrp_value = item.get('MSRP', '')
-                ws.cell(row=row_num, column=column_index_from_string(target_column)).value = msrp_value
-                logger_instance.info(f"Wrote MSRP '{msrp_value}' for Row {row_id} at {target_column}{row_num}")
+                if populate_msrp:
+                    msrp_value = item.get('MSRP', '')
+                    ws.cell(row=row_num, column=column_index_from_string(target_column)).value = msrp_value
+                    logger_instance.info(f"Wrote MSRP '{msrp_value}' for Row {row_id} at {target_column}{row_num}")
             else:
-                ws.cell(row=row_num, column=column_index_from_string(target_column)).value = ''
-                logger_instance.info(f"Filled missing row {row_num} (ExcelRowID {row_id}) with empty MSRP")
+                if populate_msrp:
+                    ws.cell(row=row_num, column=column_index_from_string(target_column)).value = ''
+                    logger_instance.info(f"Filled missing row {row_num} (ExcelRowID {row_id}) with empty MSRP")
 
         if ws.max_row > max_needed_row:
             logger_instance.info(f"Deleting {ws.max_row - max_needed_row} rows after row {max_needed_row}")
@@ -923,6 +926,18 @@ async def generate_msrp_excel(file_id: str, target_column: str, row_offset: int 
         user_agents = get_user_agents(logger_instance)
         temp_images_dir, temp_excel_dir = await create_temp_dirs(file_id)
         
+        # Determine what to populate based on FileTypeID
+        file_type_id = get_file_type_id(file_id_int, logger_instance)
+        populate_images = True
+        populate_msrp = True
+        
+        if file_type_id == 8:
+            populate_msrp = False
+            logger_instance.info(f"FileTypeID is 8: Populating IMAGES ONLY.")
+        elif file_type_id == 9:
+            populate_images = False
+            logger_instance.info(f"FileTypeID is 9: Populating MSRP ONLY.")
+
         logger_instance.info("Fetching all image and MSRP data from database...")
         images_df = get_images_excel_db(file_id_int, logger_instance)
         
@@ -955,10 +970,14 @@ async def generate_msrp_excel(file_id: str, target_column: str, row_offset: int 
             })
         
         logger_instance.info(f"Data prepared for {len(grouped_data)} unique products. Starting image downloads.")
-        if any(item['image_options'] for item in grouped_data):
-            await download_all_images(grouped_data, temp_images_dir, logger_instance, user_agents)
+        
+        if populate_images:
+            if any(item['image_options'] for item in grouped_data):
+                await download_all_images(grouped_data, temp_images_dir, logger_instance, user_agents)
+            else:
+                logger_instance.info("No images to download.")
         else:
-            logger_instance.info("No images to download, proceeding with MSRP only.")
+            logger_instance.info("Skipping image download as populate_images is False.")
         
         logger_instance.info("Starting MSRP file generation.")
         file_url, header_row_from_db = get_file_location_and_header(file_id_int, logger_instance)
@@ -990,7 +1009,7 @@ async def generate_msrp_excel(file_id: str, target_column: str, row_offset: int 
             header_row_value = inferred_header_row if inferred_header_row is not None else 0
 
         logger_instance.info(f"Using header_row_value={header_row_value} for MSRP template.")
-        write_excel_msrp(local_filename, temp_images_dir, grouped_data, header_row_value, target_column, row_offset, logger_instance)
+        write_excel_msrp(local_filename, temp_images_dir, grouped_data, header_row_value, target_column, row_offset, logger_instance, populate_images=populate_images, populate_msrp=populate_msrp)
 
         processed_file_name = f"{Path(file_name).stem}_msrp_{timestamp}.xlsx"
         public_url = await upload_file_to_space(local_filename, save_as=f"processed_files/{processed_file_name}", file_id=file_id_int, is_public=True)
