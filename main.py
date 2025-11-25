@@ -688,10 +688,17 @@ def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict],
         logger_instance.error(f"Error writing to MSRP Excel file: {e}", exc_info=True)
         raise
 
-def write_excel_generic(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, row_offset: int, logger_instance: logging.Logger):
+def write_excel_generic(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, row_offset: int, logger_instance: logging.Logger, file_type_id: Optional[int] = None):
     try:
         wb = load_workbook(local_filename)
         ws = wb.active
+
+        # Clear existing images for FileTypeID 10
+        if file_type_id == 10:
+            if hasattr(ws, '_images'):
+                ws._images = []
+                logger_instance.info("Cleared existing images for FileTypeID 10")
+
         temp_path = Path(temp_dir)
         image_map = {}
         for path_obj in temp_path.iterdir():
@@ -899,7 +906,7 @@ async def generate_download_file(file_id: str, row_offset: int = 0):
                 header_row_value = inferred_header_row if inferred_header_row is not None else 0
 
             logger_instance.info(f"Using header_row_value={header_row_value} for generic template.")
-            write_excel_generic(local_filename, temp_images_dir, grouped_data, header_row_value, row_offset, logger_instance)
+            write_excel_generic(local_filename, temp_images_dir, grouped_data, header_row_value, row_offset, logger_instance, file_type_id=file_type_id)
             
         processed_file_name = f"{Path(original_file_name).stem}_ptype-{file_type_id}_{timestamp}.xlsx"
         public_url = await upload_file_to_space(local_filename, save_as=f"processed_files/{processed_file_name}", file_id=file_id_int, is_public=True)
