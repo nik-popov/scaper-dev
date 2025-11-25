@@ -132,17 +132,18 @@ def get_file_type_id(file_id: int, logger_instance: logging.Logger) -> Optional[
         logger_instance.info(f"FileTypeID for {file_id} is {result[0] if result else 'Not Found'}")
         return result[0] if result else None
 
-def get_file_location_and_header(file_id: int, logger_instance: logging.Logger) -> Tuple[str, Optional[int]]:
-    """Retrieve the source file location URL and header row index from the database."""
+def get_file_location_and_header(file_id: int, logger_instance: logging.Logger) -> Tuple[str, Optional[int], Optional[str]]:
+    """Retrieve the source file location URL, header row index, and user email from the database."""
     with pyodbc.connect(conn_str) as connection:
         cursor = connection.cursor()
-        query = "SELECT FileLocationUrl, UserHeaderIndex FROM utb_ImageScraperFiles WHERE ID = ?"
+        query = "SELECT FileLocationUrl, UserHeaderIndex, UserEmail FROM utb_ImageScraperFiles WHERE ID = ?"
         cursor.execute(query, (file_id,))
         result = cursor.fetchone()
         if not result:
             raise FileNotFoundError(f"No file location found in DB for FileID {file_id}")
         file_location = result[0]
         header_row = result[1]
+        user_email = result[2]
         if header_row is not None:
             try:
                 header_row = int(header_row)
@@ -151,7 +152,8 @@ def get_file_location_and_header(file_id: int, logger_instance: logging.Logger) 
                 header_row = None
         logger_instance.info(f"FileLocationUrl for FileID {file_id}: {file_location}")
         logger_instance.info(f"UserHeaderIndex for FileID {file_id}: {header_row if header_row is not None else 'Not Found'}")
-        return file_location, header_row
+        logger_instance.info(f"UserEmail for FileID {file_id}: {user_email}")
+        return file_location, header_row, user_email
 
 def get_images_excel_db(file_id: int, logger_instance: logging.Logger) -> pd.DataFrame:
     """
@@ -846,7 +848,7 @@ async def generate_download_file(file_id: str, row_offset: int = 0):
         file_type_id = get_file_type_id(file_id_int, logger_instance)
         FILE_TYPE_DISTRO = 3
 
-        file_url, header_row_from_db = get_file_location_and_header(file_id_int, logger_instance)
+        file_url, header_row_from_db, user_email = get_file_location_and_header(file_id_int, logger_instance)
         original_file_name = os.path.basename(urllib.parse.unquote(file_url))
 
         if file_type_id == FILE_TYPE_DISTRO:
@@ -903,7 +905,7 @@ async def generate_download_file(file_id: str, row_offset: int = 0):
         public_url = await upload_file_to_space(local_filename, save_as=f"processed_files/{processed_file_name}", file_id=file_id_int, is_public=True)
         update_file_location_complete(file_id_int, public_url, logger_instance)
         await send_email(
-            to_emails='nik@iconluxurygroup.com',
+            to_emails=user_email or '',
             subject=f'File Processed: {file_name}',
             file_path=local_filename,
             job_id=file_id
@@ -981,7 +983,7 @@ async def generate_msrp_excel(file_id: str, target_column: str, row_offset: int 
             logger_instance.info("Skipping image download as populate_images is False.")
         
         logger_instance.info("Starting MSRP file generation.")
-        file_url, header_row_from_db = get_file_location_and_header(file_id_int, logger_instance)
+        file_url, header_row_from_db, user_email = get_file_location_and_header(file_id_int, logger_instance)
         file_name = os.path.basename(urllib.parse.unquote(file_url))
         local_filename = os.path.join(temp_excel_dir, file_name)
 
@@ -1016,7 +1018,7 @@ async def generate_msrp_excel(file_id: str, target_column: str, row_offset: int 
         public_url = await upload_file_to_space(local_filename, save_as=f"processed_files/{processed_file_name}", file_id=file_id_int, is_public=True)
         update_file_location_complete(file_id_int, public_url, logger_instance)
         await send_email(
-            to_emails='nik@iconluxurygroup.com',
+            to_emails=user_email or 'nik@iconluxurygroup.com',
             subject=f'MSRP File Processed: {file_name}',
             file_path=local_filename,
             job_id=file_id
