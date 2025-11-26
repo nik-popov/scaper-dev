@@ -276,11 +276,15 @@ def resize_image(image_path: str, logger_instance: logging.Logger) -> bool:
         with PILImage.open(image_path) as img:
             img.load()  # Ensure image is fully loaded
 
-            # Resize in memory
+            # Resize in memory (upscale or downscale)
             width, height = img.size
-            if height > MAX_IMAGE_DIMENSION or width > MAX_IMAGE_DIMENSION:
-                img.thumbnail((MAX_IMAGE_DIMENSION, MAX_IMAGE_DIMENSION), PILImage.Resampling.LANCZOS)
-                logger_instance.info(f"Resized image {image_path} to fit max dimension {MAX_IMAGE_DIMENSION}")
+            ratio = min(MAX_IMAGE_DIMENSION / width, MAX_IMAGE_DIMENSION / height)
+            new_w = int(width * ratio)
+            new_h = int(height * ratio)
+            
+            if (new_w, new_h) != (width, height):
+                img = img.resize((new_w, new_h), PILImage.Resampling.LANCZOS)
+                logger_instance.info(f"Resized image {image_path} from {width}x{height} to {new_w}x{new_h} (max dim {MAX_IMAGE_DIMENSION})")
 
             # Save once at the end
             img.save(image_path, 'PNG', compress_level=6, quality=95)
@@ -315,11 +319,15 @@ def verify_and_process_image(image_path: str, logger_instance: logging.Logger) -
         # Process image (cropping and border removal)
         img = process_image_remove_lines(image_path, img, logger_instance)
 
-        # Resize if necessary
+        # Resize to fit max dimension (upscale or downscale)
         w, h = img.size
-        if h > MAX_IMAGE_DIMENSION or w > MAX_IMAGE_DIMENSION:
-            img.thumbnail((MAX_IMAGE_DIMENSION, MAX_IMAGE_DIMENSION), PILImage.Resampling.LANCZOS)
-            logger_instance.info(f"Resized image {image_path} to fit max dimension {MAX_IMAGE_DIMENSION}")
+        ratio = min(MAX_IMAGE_DIMENSION / w, MAX_IMAGE_DIMENSION / h)
+        new_w = int(w * ratio)
+        new_h = int(h * ratio)
+        
+        if (new_w, new_h) != (w, h):
+            img = img.resize((new_w, new_h), PILImage.Resampling.LANCZOS)
+            logger_instance.info(f"Resized image {image_path} from {w}x{h} to {new_w}x{new_h} (max dim {MAX_IMAGE_DIMENSION})")
 
         # Save processed image once
         img.save(image_path, 'PNG', compress_level=6, quality=95)
