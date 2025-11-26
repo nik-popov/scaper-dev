@@ -520,7 +520,7 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                     current_width = ws.column_dimensions['A'].width or 8.43
                     ws.column_dimensions['A'].width = min(CELL_WIDTH_POINTS, max(current_width, required_width))
 
-                    cell_width_pixels = points_to_pixels(ws.column_dimensions['A'].width)
+                    cell_width_pixels = ws.column_dimensions['A'].width / 0.132
                     cell_height_pixels = points_to_pixels(CELL_HEIGHT_POINTS)
                     x_offset_pixels = max(0, (cell_width_pixels - img_width_pixels) / 2)
                     y_offset_pixels = max(0, (cell_height_pixels - img_height_pixels) / 2)
@@ -664,11 +664,36 @@ def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict],
                         image_path = os.path.join(temp_dir, image_map[row_id])
                         if verify_and_process_image(image_path, logger_instance):
                             img = Image(image_path)
-                            img.anchor = f"A{row_num}"
-                            ws.add_image(img)
+                            
                             img_height_pixels = img.height if hasattr(img, 'height') else 0
+                            img_width_pixels = img.width if hasattr(img, 'width') else 0
                             img_height_points = img_height_pixels * 72 / 96
-                            ws.row_dimensions[row_num].height = max(DEFAULT_ROW_HEIGHT_POINTS, img_height_points)
+                            
+                            new_height = max(DEFAULT_ROW_HEIGHT_POINTS, img_height_points)
+                            ws.row_dimensions[row_num].height = new_height
+                            
+                            # Calculate dimensions for centering
+                            col_width_chars = ws.column_dimensions['A'].width
+                            if col_width_chars is None:
+                                col_width_chars = 8.43
+                            cell_width_pixels = col_width_chars / 0.132
+                            cell_height_pixels = points_to_pixels(new_height)
+                            
+                            x_offset_pixels = max(0, (cell_width_pixels - img_width_pixels) / 2)
+                            y_offset_pixels = max(0, (cell_height_pixels - img_height_pixels) / 2)
+                            
+                            width_emu = pixels_to_EMU(img_width_pixels)
+                            height_emu = pixels_to_EMU(img_height_pixels)
+                            
+                            marker = AnchorMarker(
+                                col=0, # Column A
+                                colOff=pixels_to_EMU(x_offset_pixels),
+                                row=row_num - 1,
+                                rowOff=pixels_to_EMU(y_offset_pixels)
+                            )
+                            img.anchor = OneCellAnchor(_from=marker, ext=XDRPositiveSize2D(width_emu, height_emu))
+                            ws.add_image(img)
+                            
                             logger_instance.info(f"Added image for Row {row_id} at Excel row {row_num}, height set to {ws.row_dimensions[row_num].height} points")
                         else:
                             logger_instance.warning(f"Image processing failed for Row {row_id}, writing MSRP only")
@@ -786,13 +811,35 @@ def write_excel_generic(local_filename: str, temp_dir: str, image_data: List[Dic
             image_path = str(image_path_obj)
             if verify_and_process_image(image_path, logger_instance):
                 img = Image(image_path)
-                img.anchor = f"A{row_num}"
-                ws.add_image(img)
-
+                
                 img_height_pixels = getattr(img, 'height', 0)
+                img_width_pixels = getattr(img, 'width', 0)
                 img_height_points = img_height_pixels * 72 / 96
                 current_height = ws.row_dimensions[row_num].height
-                ws.row_dimensions[row_num].height = max(img_height_points, current_height or default_row_height)
+                new_height = max(img_height_points, current_height or default_row_height)
+                ws.row_dimensions[row_num].height = new_height
+                
+                # Calculate dimensions for centering
+                col_width_chars = ws.column_dimensions['A'].width
+                if col_width_chars is None:
+                    col_width_chars = 8.43
+                cell_width_pixels = col_width_chars / 0.132
+                cell_height_pixels = points_to_pixels(new_height)
+                
+                x_offset_pixels = max(0, (cell_width_pixels - img_width_pixels) / 2)
+                y_offset_pixels = max(0, (cell_height_pixels - img_height_pixels) / 2)
+                
+                width_emu = pixels_to_EMU(img_width_pixels)
+                height_emu = pixels_to_EMU(img_height_pixels)
+                
+                marker = AnchorMarker(
+                    col=0, # Column A
+                    colOff=pixels_to_EMU(x_offset_pixels),
+                    row=row_num - 1,
+                    rowOff=pixels_to_EMU(y_offset_pixels)
+                )
+                img.anchor = OneCellAnchor(_from=marker, ext=XDRPositiveSize2D(width_emu, height_emu))
+                ws.add_image(img)
 
                 logger_instance.info(
                     f"Added image for ExcelRowID {row_id} at Excel row {row_num} (absolute_mapping={use_absolute_row_ids})"
