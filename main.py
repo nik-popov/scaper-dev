@@ -446,6 +446,9 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
             logger_instance.warning(f"Negative row_offset {row_offset} provided. Ensure this is intentional.")
 
         wb = load_workbook(local_filename)
+        # Remove external links to prevent corruption warnings
+        if hasattr(wb, 'external_links'):
+            wb.external_links = []
         ws = wb.active
         image_map = {}
         for path_obj in Path(temp_dir).iterdir():
@@ -600,6 +603,9 @@ def find_header_row_index(excel_file: str, logger_instance: logging.Logger) -> O
 def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, target_column: str, row_offset: int, logger_instance: logging.Logger, populate_images: bool = True, populate_msrp: bool = True):
     try:
         wb = load_workbook(local_filename)
+        # Remove external links to prevent corruption warnings
+        if hasattr(wb, 'external_links'):
+            wb.external_links = []
         ws = wb.active
         image_map = {int(Path(f).stem): f for f in os.listdir(temp_dir) if Path(f).stem.isdigit()}
         if populate_msrp and not re.match(r'^[A-Z]+$', target_column):
@@ -724,6 +730,9 @@ def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict],
 def write_excel_generic(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, row_offset: int, logger_instance: logging.Logger, file_type_id: Optional[int] = None):
     try:
         wb = load_workbook(local_filename)
+        # Remove external links to prevent corruption warnings
+        if hasattr(wb, 'external_links'):
+            wb.external_links = []
         ws = wb.active
 
         # Clear existing images for FileTypeID 10
