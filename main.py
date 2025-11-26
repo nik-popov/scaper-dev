@@ -514,13 +514,13 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                     img_height_pixels = getattr(img, 'height', 0)
                     img_width_pixels = getattr(img, 'width', 0)
                     img_height_points = img_height_pixels * 72 / 96
-                    img_width_points = img_width_pixels * 0.132
+                    img_width_points = img_width_pixels / 7
 
                     required_width = img_width_points + PADDING_POINTS * 2
                     current_width = ws.column_dimensions['A'].width or 8.43
                     ws.column_dimensions['A'].width = min(CELL_WIDTH_POINTS, max(current_width, required_width))
 
-                    cell_width_pixels = ws.column_dimensions['A'].width / 0.132
+                    cell_width_pixels = ws.column_dimensions['A'].width * 7
                     cell_height_pixels = points_to_pixels(CELL_HEIGHT_POINTS)
                     x_offset_pixels = max(0, (cell_width_pixels - img_width_pixels) / 2)
                     y_offset_pixels = max(0, (cell_height_pixels - img_height_pixels) / 2)
@@ -676,7 +676,7 @@ def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict],
                             col_width_chars = ws.column_dimensions['A'].width
                             if col_width_chars is None:
                                 col_width_chars = 8.43
-                            cell_width_pixels = col_width_chars / 0.132
+                            cell_width_pixels = col_width_chars * 7
                             cell_height_pixels = points_to_pixels(new_height)
                             
                             x_offset_pixels = max(0, (cell_width_pixels - img_width_pixels) / 2)
@@ -823,7 +823,7 @@ def write_excel_generic(local_filename: str, temp_dir: str, image_data: List[Dic
                 col_width_chars = ws.column_dimensions['A'].width
                 if col_width_chars is None:
                     col_width_chars = 8.43
-                cell_width_pixels = col_width_chars / 0.132
+                cell_width_pixels = col_width_chars * 7
                 cell_height_pixels = points_to_pixels(new_height)
                 
                 x_offset_pixels = max(0, (cell_width_pixels - img_width_pixels) / 2)
