@@ -219,7 +219,7 @@ async def image_download(semaphore, item: Dict, save_path: str, session, logger_
                         is_valid, data = await validate_image_response(response, download_url, logger_instance)
                         if not is_valid: return False
                         
-                        final_path = os.path.join(save_path, f"{image_name}.png")
+                        final_path = os.path.join(save_path, f"{image_name}.jpeg")
 
                         def save_image_sync():
                             with PILImage.open(BytesIO(data)) as img:
@@ -230,7 +230,7 @@ async def image_download(semaphore, item: Dict, save_path: str, session, logger_
                                     img = background
                                 elif img.mode != 'RGB':
                                     img = img.convert('RGB')
-                                img.save(final_path, 'PNG', compress_level=6)
+                                img.save(final_path, 'jpeg', quality=85)
                         
                         await loop.run_in_executor(None, save_image_sync)
                                 
