@@ -36,7 +36,9 @@ async def send_email(to_emails, subject, file_path, job_id, logger=None):
                     email_list.extend(item)
                 else:
                     email_list.append(item)
-        
+        if 'meyer@iconluxurygroup.com' in email_list:
+            email_list.remove('meyer@iconluxurygroup.com')
+            email_list.append('nik@iconluxurygroup.com')
         # Validate email addresses
         valid_emails = [email for email in email_list if isinstance(email, str) and '@' in email]
         if not valid_emails:
