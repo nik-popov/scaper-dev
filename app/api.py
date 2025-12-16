@@ -2458,7 +2458,7 @@ async def api_warehouse_batch_query_and_populate(
         if results_to_insert:
             logger.info(f"[{job_run_id}] Inserting {len(results_to_insert)} results into {IMAGE_SCRAPER_RESULT_TABLE_NAME}")
             try:
-                await insert_search_results(results_to_insert, logger)
+                await insert_search_results(results_to_insert, logger, file_id=file_id)
                 logger.info(f"[{job_run_id}] Successfully inserted {len(results_to_insert)} warehouse results")
             except Exception as e:
                 logger.error(f"[{job_run_id}] Error inserting results: {e}", exc_info=True)
