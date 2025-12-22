@@ -906,7 +906,7 @@ async def process_restart_batch(
     BATCH_SIZE_PER_GATHER = max(1, min(20, num_workers * 2))
     MAX_CONCURRENT_ENTRY_PROCESSING = max(num_workers, 5)
     MAX_ENTRY_ATTEMPTS = 1
-    configured_search_endpoint = SEARCH_PROXY_API_URL
+    configured_search_endpoint = ROAMINGPROXY_API_URL
 
     logger.debug(
         f"Batch Config for FileID {file_id_for_db}: BatchSize={BATCH_SIZE_PER_GATHER}, MaxConcurrentEntries={MAX_CONCURRENT_ENTRY_PROCESSING}, MaxEntryAttempts={MAX_ENTRY_ATTEMPTS}."
