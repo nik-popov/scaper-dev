@@ -212,7 +212,7 @@ from enum import Enum
 import random
 
 class ProxyType(Enum):
-    DATAPROXY = "dataproxy"
+    # DATAPROXY = "dataproxy"
     ROAMINGPROXY = "roamingproxy"
 
 class SearchClient:
@@ -221,15 +221,15 @@ class SearchClient:
         self.semaphore = asyncio.Semaphore(max_concurrency)
         self.proxy_strategy = proxy_strategy
         self.proxies = {
-            ProxyType.DATAPROXY: {
-                "endpoint": SEARCH_PROXY_API_URL,
-                "api_key": DATAPROXY_API_KEY,
-                "headers": {
-                    "accept": "application/json",
-                    "x-api-key": DATAPROXY_API_KEY,
-                    "Content-Type": "application/json"
-                }
-            },
+            # ProxyType.DATAPROXY: {
+            #     "endpoint": SEARCH_PROXY_API_URL,
+            #     "api_key": DATAPROXY_API_KEY,
+            #     "headers": {
+            #         "accept": "application/json",
+            #         "x-api-key": DATAPROXY_API_KEY,
+            #         "Content-Type": "application/json"
+            #     }
+            # },
             ProxyType.ROAMINGPROXY: {
                 "endpoint": ROAMINGPROXY_API_URL,
                 "api_key": ROAMINGPROXY_API_KEY,
@@ -259,14 +259,15 @@ class SearchClient:
     def _select_proxy(self) -> tuple[ProxyType, dict]:
         """Selects a proxy based on the configured strategy."""
         if self.proxy_strategy == "round_robin":
-            proxy_type = ProxyType.DATAPROXY if self._request_counter % 2 == 0 else ProxyType.ROAMINGPROXY
+            # proxy_type = ProxyType.DATAPROXY if self._request_counter % 2 == 0 else ProxyType.ROAMINGPROXY
+            proxy_type = ProxyType.ROAMINGPROXY
             self._request_counter += 1
             return proxy_type, self.proxies[proxy_type]
         elif self.proxy_strategy == "primary_fallback":
-            return ProxyType.DATAPROXY, self.proxies[ProxyType.DATAPROXY]  # Default to DataProxy
+            return ProxyType.ROAMINGPROXY, self.proxies[ProxyType.ROAMINGPROXY]  # Default to DataProxy
         else:
-            self.logger.warning(f"Unknown proxy strategy: {self.proxy_strategy}. Defaulting to DataProxy.")
-            return ProxyType.DATAPROXY, self.proxies[ProxyType.DATAPROXY]
+            self.logger.warning(f"Unknown proxy strategy: {self.proxy_strategy}. Defaulting to ROAMINGPROXY.")
+            return ProxyType.ROAMINGPROXY, self.proxies[ProxyType.ROAMINGPROXY]
 
     @retry(
         stop=stop_after_attempt(3),
@@ -308,7 +309,7 @@ class SearchClient:
                                     f"PID {process_info.pid}: Service temporarily unavailable (Status {response.status}) for '{term}' in region {region_name} via {proxy_type.value}."
                                 )
                                 if region_idx == len(self.regions) - 1:
-                                    fallback_proxy_type = ProxyType.ROAMINGPROXY if proxy_type == ProxyType.DATAPROXY else ProxyType.DATAPROXY
+                                    fallback_proxy_type = ProxyType.ROAMINGPROXY 
                                     fallback_endpoint = f"{self.proxies[fallback_proxy_type]['endpoint']}?region={region_name}"
                                     self.logger.info(
                                         f"PID {process_info.pid}: Falling back to {fallback_proxy_type.value} at {fallback_endpoint} for term='{term}'."
