@@ -385,12 +385,19 @@ async def process_api_image_results(json_data, entry_id: int, logger=None) -> pd
                 if tunnel_html_url:
                      r2_html = tunnel_html_url
 
+                # Attempt to get the thumbnail from the tunnel response
+                r2_thumb = tunnel_data.get("thumbnail_url") or tunnel_data.get("screenshot_url")
+
                 # 2. Add R2 Item if available
                 if r2_image:
                     # ImageUrl -> R2 Image Url
                     # ImageSource -> R2 Html Url if available, else original source
                     final_r2_source = r2_html if r2_html else raw_source
-                    items_to_return.append((r2_image, description, final_r2_source, thumb))
+                    
+                    # If we got a thumbnail from the tunnel, use it. Otherwise fall back to original thumb.
+                    final_r2_thumb = r2_thumb if r2_thumb else thumb
+                    
+                    items_to_return.append((r2_image, description, final_r2_source, final_r2_thumb))
                 
                 return items_to_return
 
