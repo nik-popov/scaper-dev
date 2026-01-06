@@ -315,10 +315,16 @@ async def process_api_image_results(json_data, entry_id: int, logger=None) -> pd
             items_to_process = items[:5]
             
             async def process_item(item):
-                image_url = clean_image_url(extract_true_url_from_wrapper(clean_source_url(item.get("ImageUrl", "No image URL")), logger))
+                items_to_return = []
+                
+                # 1. Processing for Original Item
+                orig_image_url = clean_image_url(extract_true_url_from_wrapper(clean_source_url(item.get("ImageUrl", "No image URL")), logger))
                 description = item.get("ImageDesc", "No description")
                 raw_source = extract_true_url_from_wrapper(clean_source_url(item.get("ImageSource", "No source")), logger)
                 thumb = clean_source_url(item.get("ImageUrlThumbnail", "No thumbnail URL"))
+                
+                # Add original item first
+                items_to_return.append((orig_image_url, description, raw_source, thumb))
                 
                 tunnel_data = await resolve_via_tunnel(client, raw_source, logger)
                 
@@ -348,24 +354,24 @@ async def process_api_image_results(json_data, entry_id: int, logger=None) -> pd
                      except Exception as e:
                          logger.error(f"Error parsing tunnel html URL {tunnel_html_url}: {e}")
 
-                # Logic check: 
-                # R2HtmlUrl should go to ImageSource.
-                # ImageUrl will be the source url saved (raw_source).
-                # R2ImageUrl is discarded.
+                # 2. Add R2 Item if available
+                if r2_image:
+                    # ImageUrl -> R2 Image Url
+                    # ImageSource -> R2 Html Url if available, else original source
+                    final_r2_source = r2_html if r2_html else raw_source
+                    items_to_return.append((r2_image, description, final_r2_source, thumb))
                 
-                final_source = r2_html if r2_html else raw_source
-                final_image_url = raw_source
-                
-                return final_image_url, description, final_source, thumb
+                return items_to_return
 
             tasks = [process_item(item) for item in items_to_process]
-            results = await asyncio.gather(*tasks)
+            results_lists = await asyncio.gather(*tasks)
 
-            for image_url, description, source, thumb in results:
-                final_urls.append(image_url)
-                final_descriptions.append(description)
-                final_sources.append(source)
-                final_thumbs.append(thumb)
+            for result_list in results_lists:
+                for image_url, description, source, thumb in result_list:
+                    final_urls.append(image_url)
+                    final_descriptions.append(description)
+                    final_sources.append(source)
+                    final_thumbs.append(thumb)
 
         max_len = max(len(final_urls), len(final_descriptions), len(final_sources), len(final_thumbs))
         if any(len(lst) != max_len for lst in [final_urls, final_descriptions, final_sources, final_thumbs]):
