@@ -257,69 +257,34 @@ def process_search_result(image_html_bytes: bytes, entry_id: int, logger=None) -
         logger.error(f"Error processing search result for EntryID {entry_id}: {str(e)}")
         return pd.DataFrame()
 
-async def submit_tunnel_job(client, url: str, logger=None) -> str:
-    """Submit URL to tunnel and return job_id."""
+async def resolve_via_tunnel(client, url: str, logger=None) -> str:
+    """Submit URL to tunnel and await result."""
     if not url or not url.startswith(('http', 'https')):
-        return None
+        return url
     
-    submit_url = "https://tunnel.publicwebarchive.com/tunnel"
+    tunnel_url = "https://tunnel.publicwebarchive.com/tunnel"
+    
     try:
-        if logger: logger.debug(f"Submitting {url[:50]}... to tunnel")
-        resp = await client.get(submit_url, params={"url": url})
-        if resp.status_code != 200:
-            if logger: logger.warning(f"Tunnel submit failed: {resp.status_code}")
-            return None
+        if logger: logger.debug(f"Requesting tunnel for {url[:50]}...")
+        # Increase timeout significantly as per server logic
+        resp = await client.get(tunnel_url, params={"url": url}, timeout=120.0)
         
-        data = resp.json()
-        job_id = data.get("job_id")
-        if not job_id:
-            # Check if it returned a direct url (in case server logic changed)
-            if data.get("url"): 
-                return "COMPLETED:" + data.get("url")
-            
-            if logger: logger.warning(f"No job_id in tunnel response for {url}")
-            return None
-        
-        if logger: logger.info(f"Tunnel job started: {job_id}")
-        return job_id
+        if resp.status_code == 200:
+            data = resp.json()
+            result_url = data.get("url") or data.get("html_source_url") or data.get("result_url")
+            if result_url:
+                if logger: logger.info(f"Tunnel resolved {url} -> {result_url}")
+                return result_url
+            else:
+                if logger: logger.warning(f"Tunnel response successful but missing 'url' field: {data}")
+                return url
+        else:
+             if logger: logger.warning(f"Tunnel request failed: {resp.status_code}")
+             return url
 
     except Exception as e:
-        if logger: logger.error(f"Tunnel submit error: {e}")
-        return None
-
-async def poll_tunnel_job(client, job_id: str, logger=None) -> str:
-    """Poll tunnel for job completion."""
-    if not job_id:
-        return None
-    
-    if job_id.startswith("COMPLETED:"):
-        return job_id.replace("COMPLETED:", "")
-        
-    status_url = f"https://tunnel.publicwebarchive.com/tunnel/status/{job_id}"
-    
-    for i in range(12): # Poll for connection
-        await asyncio.sleep(3)
-        try:
-            poll_resp = await client.get(status_url)
-            if poll_resp.status_code == 200:
-                poll_data = poll_resp.json()
-                status = poll_data.get("status")
-                
-                if status == "completed":
-                    result_url = poll_data.get("html_source_url") or poll_data.get("result_url") or poll_data.get("final_url") or poll_data.get("url")
-                    if logger: logger.info(f"Tunnel job {job_id} completed. Result: {result_url}")
-                    return result_url
-                elif status == "failed":
-                        if logger: logger.warning(f"Tunnel job {job_id} failed")
-                        return None
-            elif poll_resp.status_code == 404:
-                    pass
-        except Exception as e:
-            if logger: logger.debug(f"Polling error for {job_id}: {e}")
-            pass
-            
-    if logger: logger.warning(f"Tunnel timed out for job {job_id}")
-    return None
+        if logger: logger.error(f"Tunnel request error for {url}: {e}")
+        return url
 
 async def process_api_image_results(json_data, entry_id: int, logger=None) -> pd.DataFrame:
     """Process JSON from image API into a DataFrame."""
@@ -351,36 +316,26 @@ async def process_api_image_results(json_data, entry_id: int, logger=None) -> pd
         final_sources = []
         final_thumbs = []
         
-        async with httpx.AsyncClient(verify=False, timeout=60.0) as client:
+        async with httpx.AsyncClient(verify=False, timeout=130.0) as client:
             items_to_process = items[:5]
             
-            # Phase 1: Submit
-            submit_tasks = []
-            for item in items_to_process:
-                raw_source = extract_true_url_from_wrapper(clean_source_url(item.get("ImageSource", "No source")), logger)
-                submit_tasks.append(submit_tunnel_job(client, raw_source, logger))
-            
-            job_ids = await asyncio.gather(*submit_tasks)
-            
-            # Phase 2: Poll
-            poll_tasks = []
-            for job_id in job_ids:
-                poll_tasks.append(poll_tunnel_job(client, job_id, logger))
-            
-            resolved_results = await asyncio.gather(*poll_tasks)
-            
-            for i, item in enumerate(items_to_process):
+            async def process_item(item):
                 image_url = clean_image_url(extract_true_url_from_wrapper(clean_source_url(item.get("ImageUrl", "No image URL")), logger))
                 description = item.get("ImageDesc", "No description")
                 raw_source = extract_true_url_from_wrapper(clean_source_url(item.get("ImageSource", "No source")), logger)
                 thumb = clean_source_url(item.get("ImageUrlThumbnail", "No thumbnail URL"))
                 
-                resolved_source = resolved_results[i]
-                final_source = resolved_source if resolved_source else raw_source
+                final_source = await resolve_via_tunnel(client, raw_source, logger)
+                
+                return image_url, description, final_source, thumb
 
+            tasks = [process_item(item) for item in items_to_process]
+            results = await asyncio.gather(*tasks)
+
+            for image_url, description, source, thumb in results:
                 final_urls.append(image_url)
                 final_descriptions.append(description)
-                final_sources.append(final_source)
+                final_sources.append(source)
                 final_thumbs.append(thumb)
 
         max_len = max(len(final_urls), len(final_descriptions), len(final_sources), len(final_thumbs))
