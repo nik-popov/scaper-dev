@@ -257,10 +257,10 @@ def process_search_result(image_html_bytes: bytes, entry_id: int, logger=None) -
         logger.error(f"Error processing search result for EntryID {entry_id}: {str(e)}")
         return pd.DataFrame()
 
-async def resolve_via_tunnel(client, url: str, logger=None) -> str:
+async def resolve_via_tunnel(client, url: str, logger=None) -> dict:
     """Submit URL to tunnel and await result."""
     if not url or not url.startswith(('http', 'https')):
-        return url
+        return {}
     
     tunnel_url = "https://tunnel.publicwebarchive.com/tunnel"
     
@@ -271,20 +271,15 @@ async def resolve_via_tunnel(client, url: str, logger=None) -> str:
         
         if resp.status_code == 200:
             data = resp.json()
-            result_url = data.get("url") or data.get("html_source_url") or data.get("result_url")
-            if result_url:
-                if logger: logger.info(f"Tunnel resolved {url} -> {result_url}")
-                return result_url
-            else:
-                if logger: logger.warning(f"Tunnel response successful but missing 'url' field: {data}")
-                return url
+            if logger: logger.info(f"Tunnel resolved {url} -> {data}")
+            return data
         else:
              if logger: logger.warning(f"Tunnel request failed: {resp.status_code}")
-             return url
+             return {}
 
     except Exception as e:
         if logger: logger.error(f"Tunnel request error for {url}: {e}")
-        return url
+        return {}
 
 async def process_api_image_results(json_data, entry_id: int, logger=None) -> pd.DataFrame:
     """Process JSON from image API into a DataFrame."""
@@ -325,9 +320,43 @@ async def process_api_image_results(json_data, entry_id: int, logger=None) -> pd
                 raw_source = extract_true_url_from_wrapper(clean_source_url(item.get("ImageSource", "No source")), logger)
                 thumb = clean_source_url(item.get("ImageUrlThumbnail", "No thumbnail URL"))
                 
-                final_source = await resolve_via_tunnel(client, raw_source, logger)
+                tunnel_data = await resolve_via_tunnel(client, raw_source, logger)
                 
-                return image_url, description, final_source, thumb
+                # Check for tunnel results
+                r2_image = None
+                r2_html = None
+                
+                tunnel_result_url = tunnel_data.get("url") or tunnel_data.get("result_url")
+                tunnel_html_url = tunnel_data.get("html_source_url")
+                
+                base_prefix = "https://trustedproxy.ai/ip_locator/20260106_151629/f1b"
+                
+                if tunnel_result_url:
+                     # Attempt to construct the new URL using the path from the tunnel result
+                     try:
+                        parsed = urllib.parse.urlparse(tunnel_result_url)
+                        path = parsed.path.lstrip('/')
+                        r2_image = f"{base_prefix}/{path}"
+                     except Exception as e:
+                        logger.error(f"Error parsing tunnel result URL {tunnel_result_url}: {e}")
+                
+                if tunnel_html_url:
+                     try:
+                        parsed = urllib.parse.urlparse(tunnel_html_url)
+                        path = parsed.path.lstrip('/')
+                        r2_html = f"{base_prefix}/{path}"
+                     except Exception as e:
+                         logger.error(f"Error parsing tunnel html URL {tunnel_html_url}: {e}")
+
+                # Logic check: 
+                # R2HtmlUrl should go to ImageSource.
+                # ImageUrl will be the source url saved (raw_source).
+                # R2ImageUrl is discarded.
+                
+                final_source = r2_html if r2_html else raw_source
+                final_image_url = raw_source
+                
+                return final_image_url, description, final_source, thumb
 
             tasks = [process_item(item) for item in items_to_process]
             results = await asyncio.gather(*tasks)
@@ -340,9 +369,7 @@ async def process_api_image_results(json_data, entry_id: int, logger=None) -> pd
 
         max_len = max(len(final_urls), len(final_descriptions), len(final_sources), len(final_thumbs))
         if any(len(lst) != max_len for lst in [final_urls, final_descriptions, final_sources, final_thumbs]):
-            logger.warning(f"EntryID {entry_id}: List lengths: URLs={len(final_urls)}, "
-                          f"Descriptions={len(final_descriptions)}, Sources={len(final_sources)}, "
-                          f"Thumbnails={len(final_thumbs)}. Padding to {max_len}.")
+            logger.warning(f"EntryID {entry_id}: List lengths mismatch. Padding to {max_len}.")
 
         df = pd.DataFrame({
             'EntryID': [entry_id] * max_len,
