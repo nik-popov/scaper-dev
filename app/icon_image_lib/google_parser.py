@@ -277,9 +277,13 @@ async def resolve_via_tunnel(client, url: str, logger=None) -> dict:
                 job_id = data.get("job_id")
                 if logger: logger.info(f"Tunnel job queued: {job_id}. Polling for results...")
                 
+                # Add initial delay before polling to allow job to start/process
+                await asyncio.sleep(5)
+
                 max_retries = 60 # Poll for up to 120 seconds
                 for i in range(max_retries):
-                     await asyncio.sleep(2)
+                     # Wait only 1.5s between polls to keep total check time reasonable but spaced
+                     await asyncio.sleep(1.5)
                      poll_url = f"{tunnel_url}/status/{job_id}"
                      try:
                          poll_resp = await client.get(poll_url, timeout=30.0)
@@ -361,7 +365,7 @@ async def process_api_image_results(json_data, entry_id: int, logger=None) -> pd
                 # Add original item first
                 items_to_return.append((orig_image_url, description, raw_source, thumb))
                 
-                tunnel_data = await resolve_via_tunnel(client, raw_source, logger)
+                tunnel_data = await resolve_via_tunnel(client, orig_image_url, logger)
                 
                 # Check for tunnel results
                 r2_image = None
@@ -386,7 +390,16 @@ async def process_api_image_results(json_data, entry_id: int, logger=None) -> pd
                 return items_to_return
 
             tasks = [process_item(item) for item in items_to_process]
-            results_lists = await asyncio.gather(*tasks)
+            results_lists = []
+            
+            # Process tasks with delay between them to spread load
+            for task in tasks:
+                 results_lists.append(await task)
+                 await asyncio.sleep(2) # Small delay between submissions
+                 
+            # results_lists is already a list of lists of tuples
+            # Do not use asyncio.gather since we are running sequentially
+
 
             for result_list in results_lists:
                 for image_url, description, source, thumb in result_list:
