@@ -271,6 +271,41 @@ async def resolve_via_tunnel(client, url: str, logger=None) -> dict:
         
         if resp.status_code == 200:
             data = resp.json()
+            
+            # Check for queued status and poll if necessary
+            if data.get("status") == "queued" and data.get("job_id"):
+                job_id = data.get("job_id")
+                if logger: logger.info(f"Tunnel job queued: {job_id}. Polling for results...")
+                
+                max_retries = 60 # Poll for up to 120 seconds
+                for i in range(max_retries):
+                     await asyncio.sleep(2)
+                     poll_url = f"{tunnel_url}/status/{job_id}"
+                     try:
+                         poll_resp = await client.get(poll_url, timeout=30.0)
+                         if poll_resp.status_code == 200:
+                             poll_data = poll_resp.json()
+                             status = poll_data.get("status")
+                             
+                             # Check for completion (presence of result URLs)
+                             if poll_data.get("url") or poll_data.get("html_source_url") or poll_data.get("result_url"):
+                                 if logger: logger.info(f"Tunnel job {job_id} completed.")
+                                 return poll_data
+                             elif status == "failed":
+                                 if logger: logger.warning(f"Tunnel job {job_id} failed: {poll_data}")
+                                 return {}
+                             # If still processing/queued, continue loop
+                         elif poll_resp.status_code == 404:
+                             # Job result might not be ready or job ID wrong, but we keep trying for a bit if it was just queued
+                             pass 
+                         else:
+                             if logger: logger.debug(f"Polling status check returned {poll_resp.status_code}")
+                     except Exception as e:
+                         if logger: logger.warning(f"Polling exception for job {job_id}: {e}")
+
+                if logger: logger.warning(f"Tunnel job {job_id} timed out after polling.")
+                return {}
+
             if logger: logger.info(f"Tunnel resolved {url} -> {data}")
             return data
         else:
