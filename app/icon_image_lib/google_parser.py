@@ -300,7 +300,12 @@ async def resolve_via_tunnel(client, url: str, logger=None) -> dict:
                                  return {}
                              # If still processing/queued, continue loop
                          elif poll_resp.status_code == 404:
-                             # Job result might not be ready or job ID wrong, but we keep trying for a bit if it was just queued
+                             # If 404 persists, we should probably stop after a certain number of attempts
+                             # But currently logic keeps trying.
+                             # If we get too many 404s after a certain point, we should break
+                             if i > 25: # After ~40 seconds of 404s, assume lost cause.
+                                 if logger: logger.warning(f"Tunnel job {job_id} returned 404 consistently. Aborting poll.")
+                                 return {}
                              pass 
                          else:
                              if logger: logger.debug(f"Polling status check returned {poll_resp.status_code}")
