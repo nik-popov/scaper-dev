@@ -59,140 +59,6 @@ import re
 VERSION = "7.0.0" # Updated version
 
 # --- Constants ---
-        if DB_CONSUMER_URL:
-             try:
-                db_payload = {
-                     "job_id": job_id,
-                     "url": url,
-                     "timestamp": timestamp_str,
-                     "html_content": response_text,
-                     "status_code": status_code,
-                     "headers": headers,
-                     "duration": duration
-                }
-                async with httpx.AsyncClient(timeout=60.0) as client:
-                    await client.post(DB_CONSUMER_URL, json=db_payload)
-             except Exception as db_err:
-                 default_logger.error(f"Job {job_id}: DB consumer failed: {db_err}")
-
-        # 3. R2 Upload
-        r2_conf = {
-            "endpoint_url": R2_ENDPOINT_URL,
-            "access_key_id": R2_ACCESS_KEY_ID,
-            "secret_access_key": R2_SECRET_ACCESS_KEY,
-            "bucket_name": R2_BUCKET_NAME,
-            "public_domain": R2_PUBLIC_DOMAIN
-        }
-        
-        # Local settings override
-        settings_path = "r2_settings.json"
-        if os.path.exists(settings_path):
-            try:
-                with open(settings_path, "r") as f:
-                    settings_data = json.load(f)
-                    for k in r2_conf:
-                        if k in settings_data: r2_conf[k] = settings_data[k]
-            except: pass
-
-        source_url = None
-        if all([r2_conf["endpoint_url"], r2_conf["access_key_id"], r2_conf["secret_access_key"], r2_conf["bucket_name"]]):
-            try:
-                s3_client = boto3.client(
-                    's3',
-                    endpoint_url=r2_conf["endpoint_url"],
-                    aws_access_key_id=r2_conf["access_key_id"],
-                    aws_secret_access_key=r2_conf["secret_access_key"]
-                )
-                
-                req_uuid = job_id[:8]
-                content_type = headers.get("content-type", "text/html").lower()
-                ext = ".json" if "json" in content_type else ".html"
-                
-                if ext == ".html":
-                    csp = '<meta http-equiv="Content-Security-Policy" content="script-src \'none\'">'
-                    if "<head>" in response_text:
-                        response_text = response_text.replace("<head>", f"<head>{csp}", 1)
-                    else:
-                        response_text = f"{csp}{response_text}"
-                    response_content = response_text.encode('utf-8')
-
-                object_key = f"ip_locator/{timestamp_str}/{req_uuid}{ext}"
-                
-                s3_client.put_object(
-                        Bucket=r2_conf["bucket_name"],
-                        Key=object_key,
-                        Body=response_content,
-                        ContentType=content_type,
-                        ContentDisposition="inline"
-                )
-                
-                if r2_conf["public_domain"]:
-                    domain = r2_conf["public_domain"].rstrip("/")
-                    source_url = f"{domain}/{object_key}"
-                else:
-                    source_url = f"{r2_conf['endpoint_url']}/{r2_conf['bucket_name']}/{object_key}"
-                    
-                default_logger.info(f"Job {job_id} Uploaded to R2: {source_url}")
-                return source_url 
-            except Exception as e:
-                default_logger.error(f"Job {job_id} R2 Upload failed: {e}")
-                
-    except Exception as e:
-        default_logger.error(f"Tunnel Job {job_id} failed: {e}")
-    return None
-
-async def check_job_status(job_id: str):
-    r2_conf = {
-        "endpoint_url": R2_ENDPOINT_URL,
-        "access_key_id": R2_ACCESS_KEY_ID,
-        "secret_access_key": R2_SECRET_ACCESS_KEY,
-        "bucket_name": R2_BUCKET_NAME,
-        "public_domain": R2_PUBLIC_DOMAIN
-    }
-    
-    settings_path = "r2_settings.json"
-    if os.path.exists(settings_path):
-        try:
-            with open(settings_path, "r") as f:
-                settings_data = json.load(f)
-                for k in r2_conf:
-                    if k in settings_data: r2_conf[k] = settings_data[k]
-        except: pass
-
-    if not all([r2_conf["endpoint_url"], r2_conf["access_key_id"], r2_conf["secret_access_key"], r2_conf["bucket_name"]]):
-         raise HTTPException(status_code=500, detail="R2 not configured")
-
-    try:
-        s3_client = boto3.client(
-            's3',
-            endpoint_url=r2_conf["endpoint_url"],
-            aws_access_key_id=r2_conf["access_key_id"],
-            aws_secret_access_key=r2_conf["secret_access_key"]
-        )
-        
-        prefix = "ip_locator/"
-        short_id = job_id[:8]
-        paginator = s3_client.get_paginator('list_objects_v2')
-        pages = paginator.paginate(Bucket=r2_conf["bucket_name"], Prefix=prefix)
-        
-        for page in pages:
-            if 'Contents' in page:
-                for obj in page['Contents']:
-                    if os.path.basename(obj['Key']).startswith(short_id):
-                        if r2_conf["public_domain"]:
-                            url = f"{r2_conf['public_domain'].rstrip('/')}/{obj['Key']}"
-                        else:
-                            url = f"{r2_conf['endpoint_url']}/{r2_conf['bucket_name']}/{obj['Key']}"
-                        return {"job_id": job_id, "url": url}
-        
-        raise HTTPException(status_code=404, detail="Job result not found")
-    except HTTPException: raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-# --- End Tunnel Config ---
-
-# --- Constants ---
 SCRAPER_RECORDS_TABLE_NAME = "utb_ImageScraperRecords"
 SCRAPER_RECORDS_PK_COLUMN = "EntryID"
 SCRAPER_RECORDS_FILE_ID_FK_COLUMN = "FileID"
@@ -2710,3 +2576,63 @@ async def api_validate_scraper_result_images(
     except Exception as e_main: logger.critical(f"[{job_run_id}] Critical error validating images: {e_main}", exc_info=True); crit_log_url = await upload_log_file(job_run_id, log_file_path, logger, db_record_file_id_to_update=file_id); raise HTTPException(status_code=500, detail=f"Internal server error. Log: {crit_log_url}")
 
 app.include_router(router, prefix="/api/v7")
+
+# --- Tunnel Endpoints ---
+
+@app.get("/check-ip")
+async def check_ip():
+    """
+    Endpoint to trigger the background task for IP checking via Queue.
+    """
+    job_id = str(uuid.uuid4())
+    await JOB_QUEUE.put({
+        "job_id": job_id,
+        "func": fetch_ip_details_task,
+        "kwargs": {}
+    })
+    return {"status": "queued", "message": "IP check queued", "job_id": job_id}
+
+@app.get("/tunnel")
+async def tunnel(url: str = "http://ip-api.com/json/"):
+    """
+    Tunnel endpoint to query sites independently using a job queue.
+    Waits for the job to complete and returns the result URL.
+    """
+    job_id = str(uuid.uuid4())
+    timestamp_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+    
+    await JOB_QUEUE.put({
+        "job_id": job_id,
+        "func": process_tunnel_request,
+        "kwargs": {"url": url, "job_id": job_id, "timestamp_str": timestamp_str},
+        "future": future
+    })
+    
+    try:
+        # Wait for the result
+        result_url = await future
+        
+        if not result_url:
+             raise HTTPException(status_code=500, detail="Processing failed or returned no URL")
+             
+        return {
+            "job_id": job_id,
+            "status": "completed",
+            "message": "Tunnel request completed.",
+            "url": result_url,
+            "input_url": url,
+            "timestamp": timestamp_str
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/result/{job_id}")
+async def get_job_result(job_id: str):
+    return await check_job_status(job_id)
+
+@app.get("/tunnel/status/{job_id}")
+async def get_tunnel_status(job_id: str):
+    return await check_job_status(job_id)
