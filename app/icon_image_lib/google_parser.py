@@ -7,6 +7,7 @@ import pandas as pd
 import requests
 import json
 import asyncio
+import httpx
 import time
 import os
 from .LR import LR  # Assuming LR is in icon_image_lib
@@ -256,7 +257,76 @@ def process_search_result(image_html_bytes: bytes, entry_id: int, logger=None) -
         logger.error(f"Error processing search result for EntryID {entry_id}: {str(e)}")
         return pd.DataFrame()
 
-def process_api_image_results(json_data, entry_id: int, logger=None) -> pd.DataFrame:
+async def resolve_via_tunnel(url: str, logger=None) -> str:
+    """Submit URL to tunnel and poll for result."""
+    if not url or not url.startswith(('http', 'https')):
+        return url
+    
+    submit_url = "https://tunnel.publicwebarchive.com/tunnel"
+    
+    try:
+        async with httpx.AsyncClient(verify=False, timeout=60.0) as client:
+            # 1. Submit
+            try:
+                if logger: logger.debug(f"Submitting {url[:50]}... to tunnel")
+                resp = await client.get(submit_url, params={"url": url})
+                if resp.status_code != 200:
+                    if logger: logger.warning(f"Tunnel submit failed: {resp.status_code}")
+                    return url
+                
+                data = resp.json()
+                job_id = data.get("job_id")
+                if not job_id:
+                    if logger: logger.warning(f"No job_id in tunnel response for {url}")
+                    return url
+                
+                if logger: logger.info(f"Tunnel job started: {job_id}")
+
+            except Exception as e:
+                if logger: logger.error(f"Tunnel submit error: {e}")
+                return url
+
+            # 2. Poll
+            # Using likely endpoint pattern /tunnel/status/{job_id} or /tunnel/{job_id}
+            # Since user did not specify, we try /tunnel/status/{job_id} based on common conventions
+            status_url = f"https://tunnel.publicwebarchive.com/tunnel/status/{job_id}"
+            
+            for i in range(12): # Poll for connection
+                await asyncio.sleep(3)
+                try:
+                    poll_resp = await client.get(status_url)
+                    if poll_resp.status_code == 200:
+                        poll_data = poll_resp.json()
+                        status = poll_data.get("status")
+                        
+                        if status == "completed":
+                            # Extract the result URL. 
+                            # "write source html url" -> assuming 'html_source_url' or similar in response
+                            result_url = poll_data.get("html_source_url") or poll_data.get("result_url") or poll_data.get("final_url")
+                            if result_url:
+                                if logger: logger.info(f"Tunnel resolved {url} -> {result_url}")
+                                return result_url
+                            else:
+                                if logger: logger.warning(f"Tunnel completed but no result URL found for job {job_id}")
+                                return url
+                        elif status == "failed":
+                             if logger: logger.warning(f"Tunnel job {job_id} failed")
+                             return url
+                    elif poll_resp.status_code == 404:
+                         # Job might not be ready
+                         pass
+                except Exception as e:
+                    if logger: logger.debug(f"Polling error for {job_id}: {e}")
+                    pass
+            
+            if logger: logger.warning(f"Tunnel timed out for {url} (Job: {job_id})")
+            return url
+
+    except Exception as e:
+        if logger: logger.error(f"Tunnel wrapper error: {e}")
+        return url
+
+async def process_api_image_results(json_data, entry_id: int, logger=None) -> pd.DataFrame:
     """Process JSON from image API into a DataFrame."""
     logger = logger or logging.getLogger(__name__)
     if not logger.handlers:
@@ -286,12 +356,19 @@ def process_api_image_results(json_data, entry_id: int, logger=None) -> pd.DataF
         final_sources = []
         final_thumbs = []
 
-        for item in items[:5]:
+        async def process_item(item):
             image_url = clean_image_url(extract_true_url_from_wrapper(clean_source_url(item.get("ImageUrl", "No image URL")), logger))
             description = item.get("ImageDesc", "No description")
-            source = extract_true_url_from_wrapper(clean_source_url(item.get("ImageSource", "No source")), logger)
+            raw_source = extract_true_url_from_wrapper(clean_source_url(item.get("ImageSource", "No source")), logger)
+            # Use tunnel to resolve source
+            source = await resolve_via_tunnel(raw_source, logger)
             thumb = clean_source_url(item.get("ImageUrlThumbnail", "No thumbnail URL"))
+            return image_url, description, source, thumb
 
+        tasks = [process_item(item) for item in items[:5]]
+        results = await asyncio.gather(*tasks)
+
+        for image_url, description, source, thumb in results:
             final_urls.append(image_url)
             final_descriptions.append(description)
             final_sources.append(source)
@@ -352,7 +429,7 @@ async def fetch_and_process_images(
         response.raise_for_status()  # Raise for non-2xx status codes
         
         json_data = response.json()
-        df = process_api_image_results(json_data, entry_id, logger)
+        df = await process_api_image_results(json_data, entry_id, logger)
         return df
     
     except requests.exceptions.HTTPError as e:
