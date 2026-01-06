@@ -266,8 +266,8 @@ async def resolve_via_tunnel(client, url: str, logger=None) -> dict:
     
     try:
         if logger: logger.debug(f"Requesting tunnel for {url[:50]}...")
-        # Increase timeout significantly as per server logic
-        resp = await client.get(tunnel_url, params={"url": url}, timeout=120.0)
+        # Reduce initial timeout to 30s
+        resp = await client.get(tunnel_url, params={"url": url}, timeout=30.0)
         
         if resp.status_code == 200:
             data = resp.json()
@@ -278,15 +278,17 @@ async def resolve_via_tunnel(client, url: str, logger=None) -> dict:
                 if logger: logger.info(f"Tunnel job queued: {job_id}. Polling for results...")
                 
                 # Add initial delay before polling to allow job to start/process
-                await asyncio.sleep(5)
+                await asyncio.sleep(2)
 
-                max_retries = 60 # Poll for up to 120 seconds
+                # Poll for up to 45 seconds (retry count 20 * 2s)
+                max_retries = 20
                 for i in range(max_retries):
-                     # Wait only 1.5s between polls to keep total check time reasonable but spaced
-                     await asyncio.sleep(1.5)
+                     # Wait 2s between polls
+                     await asyncio.sleep(2)
                      poll_url = f"{tunnel_url}/status/{job_id}"
                      try:
-                         poll_resp = await client.get(poll_url, timeout=30.0)
+                         # Shorter timeout for status check
+                         poll_resp = await client.get(poll_url, timeout=10.0)
                          if poll_resp.status_code == 200:
                              poll_data = poll_resp.json()
                              status = poll_data.get("status")
@@ -296,34 +298,37 @@ async def resolve_via_tunnel(client, url: str, logger=None) -> dict:
                                  if logger: logger.info(f"Tunnel job {job_id} completed.")
                                  return poll_data
                              elif status == "failed":
-                                 if logger: logger.warning(f"Tunnel job {job_id} failed: {poll_data}")
-                                 return {}
+                                 error_msg = poll_data.get("error", "Unknown job failure")
+                                 msg = f"Tunnel job {job_id} failed: {error_msg}"
+                                 if logger: logger.warning(msg)
+                                 return {"error": msg, "status": "failed", "job_id": job_id}
                              # If still processing/queued, continue loop
                          elif poll_resp.status_code == 404:
-                             # If 404 persists, we should probably stop after a certain number of attempts
-                             # But currently logic keeps trying.
-                             # If we get too many 404s after a certain point, we should break
-                             if i > 25: # After ~40 seconds of 404s, assume lost cause.
-                                 if logger: logger.warning(f"Tunnel job {job_id} returned 404 consistently. Aborting poll.")
-                                 return {}
+                             if i > 5: # If 404 persists
+                                 msg = f"Tunnel job {job_id} 404 not found."
+                                 if logger: logger.warning(msg)
+                                 return {"error": msg, "status": "failed", "job_id": job_id}
                              pass 
                          else:
                              if logger: logger.debug(f"Polling status check returned {poll_resp.status_code}")
                      except Exception as e:
                          if logger: logger.warning(f"Polling exception for job {job_id}: {e}")
 
-                if logger: logger.warning(f"Tunnel job {job_id} timed out after polling.")
-                return {}
+                msg = f"Tunnel job {job_id} timed out after polling."
+                if logger: logger.warning(msg)
+                return {"error": msg, "status": "timeout", "job_id": job_id}
 
             if logger: logger.info(f"Tunnel resolved {url} -> {data}")
             return data
         else:
-             if logger: logger.warning(f"Tunnel request failed: {resp.status_code}")
-             return {}
+             msg = f"Tunnel request failed: {resp.status_code}"
+             if logger: logger.warning(msg)
+             return {"error": msg, "status": "failed"}
 
     except Exception as e:
-        if logger: logger.error(f"Tunnel request error for {url}: {e}")
-        return {}
+        msg = f"Tunnel request error for {url}: {e}"
+        if logger: logger.error(msg)
+        return {"error": msg, "status": "error"}
 
 async def process_api_image_results(json_data, entry_id: int, logger=None) -> pd.DataFrame:
     """Process JSON from image API into a DataFrame."""
@@ -378,6 +383,7 @@ async def process_api_image_results(json_data, entry_id: int, logger=None) -> pd
                 
                 tunnel_result_url = tunnel_data.get("url") or tunnel_data.get("result_url")
                 tunnel_html_url = tunnel_data.get("html_source_url")
+                tunnel_error = tunnel_data.get("error")
                 
                 if tunnel_result_url:
                      r2_image = tunnel_result_url
@@ -388,21 +394,23 @@ async def process_api_image_results(json_data, entry_id: int, logger=None) -> pd
                 # Attempt to get the thumbnail from the tunnel response
                 r2_thumb = tunnel_data.get("thumbnail_url") or tunnel_data.get("screenshot_url")
 
-                # 2. Add R2 Item if available
-                if r2_image:
+                # 2. Add R2 Item if available or if there is a debug error
+                if r2_image or r2_html or tunnel_error:
                     # ImageUrl Logic:
-                    # If the result is an HTML source (e.g. .html), we want the ImageUrl column to hold the screenshot/thumbnail
-                    # so valid image data is displayed.
-                    # If the result is a direct image (e.g. .jpg), we use that.
-                    final_r2_url = r2_image
-                    if r2_image.lower().endswith(('.html', '.htm')) and r2_thumb:
+                    final_r2_url = r2_image if r2_image else (r2_thumb if r2_thumb else thumb)
+                    if final_r2_url and final_r2_url.lower().endswith(('.html', '.htm')) and r2_thumb:
                          final_r2_url = r2_thumb
                     
                     # ImageDesc -> Original URL (raw_source)
                     final_r2_desc = raw_source
 
-                    # ImageSource -> R2 Html Url if available, else original source
-                    final_r2_source = r2_html if r2_html else raw_source
+                    # ImageSource -> R2 Html Url if available, else error, else original source
+                    if r2_html:
+                         final_r2_source = r2_html
+                    elif tunnel_error:
+                         final_r2_source = f"DEBUG_ERROR: {tunnel_error}"
+                    else:
+                         final_r2_source = raw_source
                     
                     # Thumbnail -> R2 Thumbnail (or original thumb fallback)
                     final_r2_thumb = r2_thumb if r2_thumb else thumb
