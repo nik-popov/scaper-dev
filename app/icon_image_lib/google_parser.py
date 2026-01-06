@@ -390,13 +390,19 @@ async def process_api_image_results(json_data, entry_id: int, logger=None) -> pd
 
                 # 2. Add R2 Item if available
                 if r2_image:
-                    # ImageUrl -> R2 Thumbnail (or tunnel result if no thumb)
-                    final_r2_url = r2_thumb if r2_thumb else r2_image
+                    # R2 Tunnel Url -> r2_image (from tunnel_result_url)
+                    final_r2_url = r2_image
                     
                     # ImageDesc -> Original URL (raw_source)
                     final_r2_desc = raw_source
 
-                    # ImageSource -> R2 Html Url if available, else original source
+                    # ImageSource -> R2 Html Url if available
+                    # We want to capture BOTH the tunnelled image/screenshot URL and the tunnelled HTML URL if possible.
+                    # Currently we were just putting one or the other or raw fallback.
+                    # The request is "grab both image and html when writting tunnel results to db".
+                    # We can store the HTML URL in ImageSource (as before) and the Image/Screenshot URL in ImageUrl (as above).
+                    # If r2_html is missing, we fallback to raw_source for ImageSource component.
+                    
                     final_r2_source = r2_html if r2_html else raw_source
                     
                     # Thumbnail -> R2 Thumbnail (or original thumb fallback)
