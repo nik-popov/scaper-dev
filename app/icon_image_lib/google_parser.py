@@ -370,24 +370,11 @@ async def process_api_image_results(json_data, entry_id: int, logger=None) -> pd
                 tunnel_result_url = tunnel_data.get("url") or tunnel_data.get("result_url")
                 tunnel_html_url = tunnel_data.get("html_source_url")
                 
-                base_prefix = "https://trustedproxy.ai/ip_locator/20260106_151629/f1b"
-                
                 if tunnel_result_url:
-                     # Attempt to construct the new URL using the path from the tunnel result
-                     try:
-                        parsed = urllib.parse.urlparse(tunnel_result_url)
-                        path = parsed.path.lstrip('/')
-                        r2_image = f"{base_prefix}/{path}"
-                     except Exception as e:
-                        logger.error(f"Error parsing tunnel result URL {tunnel_result_url}: {e}")
+                     r2_image = tunnel_result_url
                 
                 if tunnel_html_url:
-                     try:
-                        parsed = urllib.parse.urlparse(tunnel_html_url)
-                        path = parsed.path.lstrip('/')
-                        r2_html = f"{base_prefix}/{path}"
-                     except Exception as e:
-                         logger.error(f"Error parsing tunnel html URL {tunnel_html_url}: {e}")
+                     r2_html = tunnel_html_url
 
                 # 2. Add R2 Item if available
                 if r2_image:
