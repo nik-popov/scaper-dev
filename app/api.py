@@ -293,7 +293,7 @@ class SearchClient:
                 )
 
                 try:
-                    async with asyncio.timeout(45):
+                    async with asyncio.timeout(180):
                         async with current_session.post(
                             current_fetch_endpoint,
                             json={"url": search_url_google},
