@@ -365,7 +365,7 @@ async def process_api_image_results(json_data, entry_id: int, logger=None) -> pd
                 # Add original item first
                 items_to_return.append((orig_image_url, description, raw_source, thumb))
                 
-                tunnel_data = await resolve_via_tunnel(client, orig_image_url, logger)
+                tunnel_data = await resolve_via_tunnel(client, raw_source, logger)
                 
                 # Check for tunnel results
                 r2_image = None
