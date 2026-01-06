@@ -343,24 +343,38 @@ async def process_api_image_results(json_data, entry_id: int, logger=None) -> pd
         final_descriptions = []
         final_sources = []
         final_thumbs = []
+        
+        async with httpx.AsyncClient(verify=False, timeout=60.0) as client:
+            items_to_process = items[:5]
+            
+            # Phase 1: Submit
+            submit_tasks = []
+            for item in items_to_process:
+                raw_source = extract_true_url_from_wrapper(clean_source_url(item.get("ImageSource", "No source")), logger)
+                submit_tasks.append(submit_tunnel_job(client, raw_source, logger))
+            
+            job_ids = await asyncio.gather(*submit_tasks)
+            
+            # Phase 2: Poll
+            poll_tasks = []
+            for job_id in job_ids:
+                poll_tasks.append(poll_tunnel_job(client, job_id, logger))
+            
+            resolved_results = await asyncio.gather(*poll_tasks)
+            
+            for i, item in enumerate(items_to_process):
+                image_url = clean_image_url(extract_true_url_from_wrapper(clean_source_url(item.get("ImageUrl", "No image URL")), logger))
+                description = item.get("ImageDesc", "No description")
+                raw_source = extract_true_url_from_wrapper(clean_source_url(item.get("ImageSource", "No source")), logger)
+                thumb = clean_source_url(item.get("ImageUrlThumbnail", "No thumbnail URL"))
+                
+                resolved_source = resolved_results[i]
+                final_source = resolved_source if resolved_source else raw_source
 
-        async def process_item(item):
-            image_url = clean_image_url(extract_true_url_from_wrapper(clean_source_url(item.get("ImageUrl", "No image URL")), logger))
-            description = item.get("ImageDesc", "No description")
-            raw_source = extract_true_url_from_wrapper(clean_source_url(item.get("ImageSource", "No source")), logger)
-            # Use tunnel to resolve source
-            source = await resolve_via_tunnel(raw_source, logger)
-            thumb = clean_source_url(item.get("ImageUrlThumbnail", "No thumbnail URL"))
-            return image_url, description, source, thumb
-
-        tasks = [process_item(item) for item in items[:5]]
-        results = await asyncio.gather(*tasks)
-
-        for image_url, description, source, thumb in results:
-            final_urls.append(image_url)
-            final_descriptions.append(description)
-            final_sources.append(source)
-            final_thumbs.append(thumb)
+                final_urls.append(image_url)
+                final_descriptions.append(description)
+                final_sources.append(final_source)
+                final_thumbs.append(thumb)
 
         max_len = max(len(final_urls), len(final_descriptions), len(final_sources), len(final_thumbs))
         if any(len(lst) != max_len for lst in [final_urls, final_descriptions, final_sources, final_thumbs]):
