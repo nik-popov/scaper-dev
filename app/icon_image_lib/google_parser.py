@@ -361,7 +361,7 @@ async def process_api_image_results(json_data, entry_id: int, logger=None) -> pd
         final_thumbs = []
         
         async with httpx.AsyncClient(verify=False, timeout=130.0) as client:
-            items_to_process = items[:5]
+            items_to_process = items
             
             async def process_item(item):
                 items_to_return = []
