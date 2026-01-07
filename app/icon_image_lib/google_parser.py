@@ -468,7 +468,7 @@ async def fetch_and_process_images(
     query: str,
     entry_id: int,
     brand: str = None,
-    search_type: str = "image",
+    search_type: str = "combined",
     logger: logging.Logger = None,
 ) -> pd.DataFrame:
     logger = logger or logging.getLogger(__name__)
