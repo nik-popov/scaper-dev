@@ -335,7 +335,7 @@ class SearchClient:
                                             )
                                             continue
                                         html_bytes = html_content_from_api.encode('utf-8') if isinstance(html_content_from_api, str) else str(html_content_from_api).encode('utf-8')
-                                        formatted_results_df = await fetch_and_process_images(term, entry_id, brand=brand, search_type="image", logger=self.logger)
+                                        formatted_results_df = await fetch_and_process_images(term, entry_id, brand=brand, search_type="combined", logger=self.logger)
                                         if not formatted_results_df.empty:
                                             results = [
                                                 {
