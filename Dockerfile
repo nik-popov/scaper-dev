@@ -40,6 +40,10 @@ ENV PATH="/opt/mssql-tools/bin:${PATH}"
 # Verify installation of unixODBC
 RUN which odbcinst
 
+# Create temp directories with proper permissions
+RUN mkdir -p /app/temp_files/images /app/temp_files/excel /app/jobs && \
+    chmod -R 777 /app/temp_files /app/jobs
+
 # LABEL "com.datadoghq.ad.logs"='[<LOGS_CONFIG>]'
 # Make port 8000 available to the world outside this container
 EXPOSE 8080
