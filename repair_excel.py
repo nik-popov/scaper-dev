@@ -13,7 +13,7 @@ import xml.etree.ElementTree as ET
 
 def replace_external_formulas_with_text(sheet_file):
     """
-    Replace cells containing external formulas with the text '#REF'.
+    Replace cells containing external formulas and linked data types with the text '#REF'.
 
     Args:
         sheet_file: Path to the worksheet XML file
@@ -30,9 +30,17 @@ def replace_external_formulas_with_text(sheet_file):
         ns = {'ss': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
 
         modified = False
+        external_ref_count = 0
+        linked_data_count = 0
+
+        # Linked data type indicators
+        linked_data_functions = ['FIELDVALUE', 'FILTERXML', 'ANCHORARRAY', '_xlfn.FIELDVALUE']
 
         # Find all cell elements
         for cell in root.findall('.//ss:c', ns):
+            should_replace = False
+            cell_type = None
+
             # Check if cell has a formula
             formula = cell.find('ss:f', ns)
 
@@ -41,27 +49,58 @@ def replace_external_formulas_with_text(sheet_file):
 
                 # Check if formula references external workbook (contains '[' and ']')
                 if '[' in formula_text and ']' in formula_text:
-                    # Remove the formula element
+                    should_replace = True
+                    cell_type = 'external_ref'
+                    external_ref_count += 1
+
+                # Check if formula is a linked data type formula
+                elif any(func in formula_text.upper() for func in linked_data_functions):
+                    should_replace = True
+                    cell_type = 'linked_data'
+                    linked_data_count += 1
+
+            # Check for linked data type attribute (cell type 't')
+            cell_type_attr = cell.get('t')
+            if cell_type_attr == 'e':  # Error type cells
+                # Check if there's a cached error value
+                v_elem = cell.find('ss:v', ns)
+                if v_elem is not None and v_elem.text in ['#REF!', '#VALUE!', '#N/A']:
+                    should_replace = True
+                    if cell_type is None:
+                        cell_type = 'error'
+
+            if should_replace:
+                # Remove the formula element if present
+                if formula is not None:
                     cell.remove(formula)
 
-                    # Set cell type to inline string (str)
-                    cell.set('t', 'inlineStr')
+                # Set cell type to inline string (str)
+                cell.set('t', 'inlineStr')
 
-                    # Remove any existing value element
-                    for v in cell.findall('ss:v', ns):
-                        cell.remove(v)
+                # Remove any existing value element
+                for v in cell.findall('ss:v', ns):
+                    cell.remove(v)
 
-                    # Add inline string value
-                    is_elem = ET.SubElement(cell, '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}is')
-                    t_elem = ET.SubElement(is_elem, '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}t')
-                    t_elem.text = '#REF'
+                # Remove any existing inline string
+                for is_elem in cell.findall('ss:is', ns):
+                    cell.remove(is_elem)
 
-                    modified = True
+                # Add inline string value
+                is_elem = ET.SubElement(cell, '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}is')
+                t_elem = ET.SubElement(is_elem, '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}t')
+                t_elem.text = '#REF'
+
+                modified = True
 
         if modified:
             # Write back to file
             tree.write(sheet_file, encoding='utf-8', xml_declaration=True)
-            print(f"  ✓ Updated {sheet_file.name}")
+            details = []
+            if external_ref_count > 0:
+                details.append(f"{external_ref_count} external refs")
+            if linked_data_count > 0:
+                details.append(f"{linked_data_count} linked data")
+            print(f"  ✓ Updated {sheet_file.name} ({', '.join(details)})")
 
     except Exception as e:
         print(f"  ⚠ Warning: Could not process {sheet_file.name}: {e}")
@@ -79,8 +118,6 @@ def repair_excel_file(input_file, output_file=None):
 
     if output_file is None:
         output_file = input_path.parent / f"{input_path.stem}_repaired{input_path.suffix}"
-
-    output_path = Path(output_file)
 
     # Create a temporary directory for extraction
     temp_dir = input_path.parent / "temp_excel_repair"
@@ -106,7 +143,6 @@ def repair_excel_file(input_file, output_file=None):
                 content = f.read()
 
             # Remove external link relationship entries
-            import re
             # Remove lines containing externalLinks
             lines = content.split('\n')
             cleaned_lines = [line for line in lines if 'externalLinks' not in line]
@@ -140,7 +176,7 @@ def repair_excel_file(input_file, output_file=None):
         # Create the repaired Excel file
         print(f"Creating repaired file {output_file}...")
         with zipfile.ZipFile(output_file, 'w', zipfile.ZIP_DEFLATED) as zip_ref:
-            for root, dirs, files in os.walk(temp_dir):
+            for root, _dirs, files in os.walk(temp_dir):
                 for file in files:
                     file_path = Path(root) / file
                     arcname = file_path.relative_to(temp_dir)
