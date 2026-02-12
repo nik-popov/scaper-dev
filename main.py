@@ -632,10 +632,10 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
         logger_instance.info(f"=== Starting write_excel_distro ===")
         logger_instance.info(f"Template file: {local_filename}, size: {os.path.getsize(local_filename)} bytes")
 
-        # Clean the template file to remove external links
-        logger_instance.info("Cleaning template file to remove external links...")
+        # Clean the template file (mark external links as broken to preserve formulas)
+        logger_instance.info("Cleaning template file (marking external links as broken)...")
         original_filename = local_filename
-        cleaned_filename = clean_template_file(local_filename, logger_instance)
+        cleaned_filename = clean_template_file(local_filename, logger_instance, mark_broken=True)
         logger_instance.info(f"Using cleaned template: {cleaned_filename}")
 
         # Validate template file BEFORE loading
@@ -860,10 +860,16 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
         raise
 
 
-def clean_template_file(template_path: str, logger_instance: logging.Logger) -> str:
+def clean_template_file(template_path: str, logger_instance: logging.Logger, mark_broken: bool = True) -> str:
     """
     Clean external links from template file by manually editing the ZIP archive.
-    This is more robust than using openpyxl's methods which can fail on certain files.
+
+    Args:
+        template_path: Path to the template file
+        logger_instance: Logger instance
+        mark_broken: If True, keeps external links but marks them as broken (preserves formulas).
+                     If False, removes external links entirely (old behavior).
+
     Returns path to cleaned file.
     """
     import zipfile
@@ -871,7 +877,7 @@ def clean_template_file(template_path: str, logger_instance: logging.Logger) -> 
 
     try:
         cleaned_path = f"{template_path}.cleaned.xlsx"
-        logger_instance.info(f"Cleaning template file: {template_path}")
+        logger_instance.info(f"Cleaning template file: {template_path} (mark_broken={mark_broken})")
 
         # Read the original Excel file as a ZIP
         with zipfile.ZipFile(template_path, 'r') as zip_in:
@@ -882,23 +888,68 @@ def clean_template_file(template_path: str, logger_instance: logging.Logger) -> 
             external_files = [f for f in file_list if 'externalLink' in f.lower()]
 
             if external_files:
-                logger_instance.info(f"Found external link files to remove: {external_files}")
+                logger_instance.info(f"Found external link files: {external_files}")
 
-            # Create new ZIP without external link files
+            # Create new ZIP
             with zipfile.ZipFile(cleaned_path, 'w', zipfile.ZIP_DEFLATED) as zip_out:
                 for item in file_list:
-                    # Skip external link files entirely
+                    # Handle external link files based on mode
                     if 'externalLink' in item.lower():
-                        logger_instance.info(f"Skipping external link file: {item}")
-                        continue
+                        if mark_broken:
+                            logger_instance.info(f"Keeping but marking as broken: {item}")
+                            # Keep the file but we'll modify it below
+                        else:
+                            logger_instance.info(f"Removing external link file: {item}")
+                            continue  # Skip this file entirely
 
                     # Get original file info to preserve metadata
                     info = zip_in.getinfo(item)
                     # Read the file content
                     data = zip_in.read(item)
 
-                    # Clean workbook.xml to remove externalReferences
-                    if item == 'xl/workbook.xml':
+                    # Modify external link files to point to dummy path (mark as broken)
+                    if mark_broken and 'externalLinks/externalLink' in item and item.endswith('.xml'):
+                        try:
+                            ET.register_namespace('', 'http://schemas.openxmlformats.org/spreadsheetml/2006/main')
+                            root = ET.fromstring(data)
+
+                            # Find externalBook element and change the link to a non-existent dummy path
+                            for elem in root.iter():
+                                if 'externalBook' in elem.tag:
+                                    # Change r:id to point to a broken relationship
+                                    # We'll handle this in the .rels file
+                                    pass
+
+                            # Convert back to bytes
+                            data = ET.tostring(root, encoding='utf-8', xml_declaration=False)
+                            data = b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' + data
+                            logger_instance.info(f"Modified external link file: {item}")
+                        except Exception as xml_error:
+                            logger_instance.warning(f"Could not parse external link file {item}: {xml_error}, using original")
+
+                    # Modify external link .rels files to point to non-existent paths
+                    if mark_broken and 'externalLinks/_rels/externalLink' in item and item.endswith('.rels'):
+                        try:
+                            ET.register_namespace('', 'http://schemas.openxmlformats.org/package/2006/relationships')
+                            root = ET.fromstring(data)
+
+                            # Change all Target paths to a dummy non-existent file
+                            for rel in root.iter():
+                                if 'Relationship' in rel.tag:
+                                    if rel.get('Target'):
+                                        # Change to a clearly broken path
+                                        rel.set('Target', 'file:///BROKEN_EXTERNAL_LINK.xlsx')
+                                        rel.set('TargetMode', 'External')
+                                        logger_instance.info(f"Marked relationship as broken in {item}")
+
+                            data = ET.tostring(root, encoding='utf-8', xml_declaration=False)
+                            data = b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' + data
+                            logger_instance.info(f"Modified external link relationship: {item}")
+                        except Exception as xml_error:
+                            logger_instance.warning(f"Could not parse external link .rels {item}: {xml_error}, using original")
+
+                    # Clean workbook.xml to remove externalReferences (only if NOT mark_broken)
+                    if item == 'xl/workbook.xml' and not mark_broken:
                         try:
                             # Register ALL common namespaces to preserve XML structure
                             ET.register_namespace('', 'http://schemas.openxmlformats.org/spreadsheetml/2006/main')
@@ -926,8 +977,8 @@ def clean_template_file(template_path: str, logger_instance: logging.Logger) -> 
                         except Exception as xml_error:
                             logger_instance.warning(f"Could not parse workbook.xml: {xml_error}, using original")
 
-                    # Clean workbook.xml.rels to remove external link relationships
-                    elif 'workbook.xml.rels' in item:
+                    # Clean workbook.xml.rels to remove external link relationships (only if NOT mark_broken)
+                    elif 'workbook.xml.rels' in item and not mark_broken:
                         try:
                             # Register namespace
                             ET.register_namespace('', 'http://schemas.openxmlformats.org/package/2006/relationships')
@@ -1071,10 +1122,10 @@ def find_header_row_index(excel_file: str, logger_instance: logging.Logger) -> O
 
 def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, target_column: str, row_offset: int, logger_instance: logging.Logger, populate_images: bool = True, populate_msrp: bool = True):
     try:
-        # Clean the file to remove external links
-        logger_instance.info("Cleaning file to remove external links...")
+        # Clean the file (mark external links as broken to preserve formulas)
+        logger_instance.info("Cleaning file (marking external links as broken)...")
         original_filename = local_filename
-        cleaned_filename = clean_template_file(local_filename, logger_instance)
+        cleaned_filename = clean_template_file(local_filename, logger_instance, mark_broken=True)
 
         # Load the workbook
         wb = load_workbook(cleaned_filename)
@@ -1252,10 +1303,10 @@ def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict],
 
 def write_excel_generic(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, row_offset: int, logger_instance: logging.Logger, file_type_id: Optional[int] = None):
     try:
-        # Clean the file to remove external links
-        logger_instance.info("Cleaning file to remove external links...")
+        # Clean the file (mark external links as broken to preserve formulas)
+        logger_instance.info("Cleaning file (marking external links as broken)...")
         original_filename = local_filename
-        cleaned_filename = clean_template_file(local_filename, logger_instance)
+        cleaned_filename = clean_template_file(local_filename, logger_instance, mark_broken=True)
 
         # Load the workbook
         wb = load_workbook(cleaned_filename)
