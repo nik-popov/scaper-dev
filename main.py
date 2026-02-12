@@ -701,12 +701,19 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
             logger_instance.error(f"Computed base_row {base_row} is less than 1. Aborting.")
             raise ValueError("Invalid row range: base_row is less than 1")
 
-        total_rows_needed = max(0, max_row_id - min_row_id + 1)
-        max_needed_row = base_row + max(0, total_rows_needed - 1)
+        # CRITICAL FIX: Only create rows that have actual data, not the entire range
+        # Create mapping of ExcelRowID -> Excel row number
+        row_id_to_row_num = {}
+        for idx, row_id in enumerate(data_row_ids):
+            row_id_to_row_num[row_id] = base_row + idx
+
+        # Calculate max row needed (only for rows with data)
+        max_needed_row = base_row + len(data_row_ids) - 1 if data_row_ids else base_row
         max_needed_row = max(max_needed_row, last_non_empty_row)
+
         logger_instance.info(
             f"Row mapping summary -> base_row: {base_row}, min_row_id: {min_row_id}, max_row_id: {max_row_id}, "
-            f"total_rows_needed: {total_rows_needed}, max_needed_row: {max_needed_row}"
+            f"data_rows_count: {len(data_row_ids)}, max_needed_row: {max_needed_row}"
         )
 
         if ws.max_row < max_needed_row:
@@ -719,91 +726,107 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
         CELL_HEIGHT_POINTS = max(DEFAULT_ROW_HEIGHT_POINTS, 150)
         PADDING_POINTS = 5
 
-        for row_id in range(min_row_id, max_row_id + 1):
-            row_position = row_id - min_row_id
-            row_num = base_row + row_position
+        # Process only rows that actually have data
+        for row_id in data_row_ids:
+            row_num = row_id_to_row_num[row_id]
 
             ws.row_dimensions[row_num].height = CELL_HEIGHT_POINTS
 
             image_path = image_map.get(row_id)
             if image_path:
-                logger_instance.info(f"Processing image for Row {row_id}: {image_path}")
-                if verify_and_process_image(image_path, logger_instance):
-                    try:
-                        # Validate image file one more time before inserting
-                        if not os.path.exists(image_path) or os.path.getsize(image_path) < MIN_IMAGE_SIZE:
-                            logger_instance.warning(f"Image file invalid after processing for Row {row_id}, skipping")
-                        else:
-                            # Try to create openpyxl Image object with error handling
-                            logger_instance.info(f"Creating openpyxl Image object for Row {row_id}")
-                            img = Image(image_path)
-                            logger_instance.info(f"Image object created successfully for Row {row_id}")
-                            img_height_pixels = getattr(img, 'height', 0)
-                            img_width_pixels = getattr(img, 'width', 0)
+                logger_instance.info(f"DEBUG: Processing image for Row {row_id}: {image_path}")
+                if not verify_and_process_image(image_path, logger_instance):
+                    error_msg = f"DEBUG: verify_and_process_image FAILED for Row {row_id} at {image_path}"
+                    logger_instance.error(error_msg)
+                    raise ValueError(error_msg)
 
-                            # Validate dimensions
-                            if img_height_pixels <= 0 or img_width_pixels <= 0:
-                                logger_instance.warning(f"Invalid image dimensions for Row {row_id}: {img_width_pixels}x{img_height_pixels}, skipping")
-                            else:
-                                img_height_points = img_height_pixels * 72 / 96
-                                img_width_points = img_width_pixels / 7
+                try:
+                    # Validate image file one more time before inserting
+                    if not os.path.exists(image_path):
+                        error_msg = f"DEBUG: Image file DOES NOT EXIST after verify_and_process for Row {row_id}: {image_path}"
+                        logger_instance.error(error_msg)
+                        raise FileNotFoundError(error_msg)
 
-                                required_width = img_width_points + PADDING_POINTS * 2
-                                current_width = ws.column_dimensions['A'].width or 8.43
-                                ws.column_dimensions['A'].width = min(CELL_WIDTH_POINTS, max(current_width, required_width))
+                    file_size = os.path.getsize(image_path)
+                    if file_size < MIN_IMAGE_SIZE:
+                        error_msg = f"DEBUG: Image file TOO SMALL after verify_and_process for Row {row_id}: {file_size} bytes at {image_path}"
+                        logger_instance.error(error_msg)
+                        raise ValueError(error_msg)
 
-                                cell_width_pixels = ws.column_dimensions['A'].width * 7
-                                cell_height_pixels = points_to_pixels(CELL_HEIGHT_POINTS)
-                                x_offset_pixels = max(0, (cell_width_pixels - img_width_pixels) / 2)
-                                y_offset_pixels = max(0, (cell_height_pixels - img_height_pixels) / 2)
+                    # Try to create openpyxl Image object with error handling
+                    logger_instance.info(f"DEBUG: Creating openpyxl Image object for Row {row_id}")
+                    img = Image(image_path)
+                    logger_instance.info(f"Image object created successfully for Row {row_id}")
+                    img_height_pixels = getattr(img, 'height', 0)
+                    img_width_pixels = getattr(img, 'width', 0)
 
-                                width_emu = pixels_to_EMU(img_width_pixels)
-                                height_emu = pixels_to_EMU(img_height_pixels)
+                    # Validate dimensions
+                    if img_height_pixels <= 0 or img_width_pixels <= 0:
+                        error_msg = f"DEBUG: Invalid image dimensions for Row {row_id}: {img_width_pixels}x{img_height_pixels}"
+                        logger_instance.error(error_msg)
+                        raise ValueError(error_msg)
 
-                                # Validate EMU values to prevent XML corruption
-                                if width_emu <= 0 or height_emu <= 0:
-                                    logger_instance.warning(f"Invalid EMU dimensions for Row {row_id}: {width_emu}x{height_emu}, skipping")
-                                elif width_emu > 10000000 or height_emu > 10000000:  # Max ~1050 pixels
-                                    logger_instance.warning(f"EMU dimensions too large for Row {row_id}: {width_emu}x{height_emu}, skipping")
-                                else:
-                                    anchor_row = max(0, row_num - 1)
-                                    x_offset_emu = pixels_to_EMU(x_offset_pixels)
-                                    y_offset_emu = pixels_to_EMU(y_offset_pixels)
+                    img_height_points = img_height_pixels * 72 / 96
+                    img_width_points = img_width_pixels / 7
 
-                                    # Ensure offsets are non-negative and within valid range
-                                    # Max offset is approximately 9,525,000 EMU (1000 pixels)
-                                    MAX_OFFSET_EMU = 9525000
-                                    x_offset_emu = max(0, min(x_offset_emu, MAX_OFFSET_EMU))
-                                    y_offset_emu = max(0, min(y_offset_emu, MAX_OFFSET_EMU))
+                    required_width = img_width_points + PADDING_POINTS * 2
+                    current_width = ws.column_dimensions['A'].width or 8.43
+                    ws.column_dimensions['A'].width = min(CELL_WIDTH_POINTS, max(current_width, required_width))
 
-                                    logger_instance.info(
-                                        f"Creating anchor for Row {row_id} at Excel row {row_num}: "
-                                        f"marker(col=0, colOff={x_offset_emu}, row={anchor_row}, rowOff={y_offset_emu}), "
-                                        f"size({width_emu}x{height_emu} EMU = {img_width_pixels}x{img_height_pixels} px)"
-                                    )
-                                    marker = AnchorMarker(
-                                        col=0,
-                                        colOff=x_offset_emu,
-                                        row=anchor_row,
-                                        rowOff=y_offset_emu
-                                    )
-                                    img.anchor = OneCellAnchor(_from=marker, ext=XDRPositiveSize2D(width_emu, height_emu))
+                    cell_width_pixels = ws.column_dimensions['A'].width * 7
+                    cell_height_pixels = points_to_pixels(CELL_HEIGHT_POINTS)
+                    x_offset_pixels = max(0, (cell_width_pixels - img_width_pixels) / 2)
+                    y_offset_pixels = max(0, (cell_height_pixels - img_height_pixels) / 2)
 
-                                    image_count_before = len(ws._images) if hasattr(ws, '_images') else 0
-                                    logger_instance.info(f"Adding image to worksheet (current count: {image_count_before})")
-                                    ws.add_image(img)
-                                    image_count_after = len(ws._images) if hasattr(ws, '_images') else 0
-                                    logger_instance.info(f"Image added successfully (new count: {image_count_after})")
+                    width_emu = pixels_to_EMU(img_width_pixels)
+                    height_emu = pixels_to_EMU(img_height_pixels)
 
-                                    logger_instance.info(
-                                        f"✓ Added image for Row {row_id} at Excel row {row_num}, "
-                                        f"height={CELL_HEIGHT_POINTS} points, width={ws.column_dimensions['A'].width:.2f} points"
-                                    )
-                    except Exception as img_error:
-                        logger_instance.error(f"Failed to insert image for Row {row_id}: {img_error}", exc_info=True)
-                        logger_instance.warning(f"Skipping image insertion for Row {row_id}, writing metadata only")
-                else:
-                    logger_instance.warning(f"Image processing failed for Row {row_id}, writing metadata only")
+                    # Validate EMU values to prevent XML corruption
+                    if width_emu <= 0 or height_emu <= 0:
+                        error_msg = f"DEBUG: Invalid EMU dimensions for Row {row_id}: {width_emu}x{height_emu}"
+                        logger_instance.error(error_msg)
+                        raise ValueError(error_msg)
+                    elif width_emu > 10000000 or height_emu > 10000000:  # Max ~1050 pixels
+                        error_msg = f"DEBUG: EMU dimensions too large for Row {row_id}: {width_emu}x{height_emu}"
+                        logger_instance.error(error_msg)
+                        raise ValueError(error_msg)
+
+                    anchor_row = max(0, row_num - 1)
+                    x_offset_emu = pixels_to_EMU(x_offset_pixels)
+                    y_offset_emu = pixels_to_EMU(y_offset_pixels)
+
+                    # Ensure offsets are non-negative and within valid range
+                    # Max offset is approximately 9,525,000 EMU (1000 pixels)
+                    MAX_OFFSET_EMU = 9525000
+                    x_offset_emu = max(0, min(x_offset_emu, MAX_OFFSET_EMU))
+                    y_offset_emu = max(0, min(y_offset_emu, MAX_OFFSET_EMU))
+
+                    logger_instance.info(
+                        f"Creating anchor for Row {row_id} at Excel row {row_num}: "
+                        f"marker(col=0, colOff={x_offset_emu}, row={anchor_row}, rowOff={y_offset_emu}), "
+                        f"size({width_emu}x{height_emu} EMU = {img_width_pixels}x{img_height_pixels} px)"
+                    )
+                    marker = AnchorMarker(
+                        col=0,
+                        colOff=x_offset_emu,
+                        row=anchor_row,
+                        rowOff=y_offset_emu
+                    )
+                    img.anchor = OneCellAnchor(_from=marker, ext=XDRPositiveSize2D(width_emu, height_emu))
+
+                    image_count_before = len(ws._images) if hasattr(ws, '_images') else 0
+                    logger_instance.info(f"Adding image to worksheet (current count: {image_count_before})")
+                    ws.add_image(img)
+                    image_count_after = len(ws._images) if hasattr(ws, '_images') else 0
+                    logger_instance.info(f"Image added successfully (new count: {image_count_after})")
+
+                    logger_instance.info(
+                        f"✓ Added image for Row {row_id} at Excel row {row_num}, "
+                        f"height={CELL_HEIGHT_POINTS} points, width={ws.column_dimensions['A'].width:.2f} points"
+                    )
+                except Exception as img_error:
+                    logger_instance.error(f"DEBUG: EXCEPTION while inserting image for Row {row_id}: {img_error}", exc_info=True)
+                    raise  # Re-raise to stop execution for debugging
             else:
                 logger_instance.info(f"No image found for Row {row_id}, writing metadata only")
 
@@ -1173,12 +1196,17 @@ def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict],
             logger_instance.error(f"Computed base_row {base_row} is less than 1. Aborting.")
             raise ValueError("Invalid row range: base_row is less than 1")
 
-        total_rows_needed = max(0, max_row_id - min_row_id + 1)
-        max_needed_row = base_row + max(0, total_rows_needed - 1)
+        # CRITICAL FIX: Only create rows that have actual data
+        row_id_to_row_num = {}
+        for idx, row_id in enumerate(data_row_ids):
+            row_id_to_row_num[row_id] = base_row + idx
+
+        max_needed_row = base_row + len(data_row_ids) - 1 if data_row_ids else base_row
         max_needed_row = max(max_needed_row, last_non_empty_row)
+
         logger_instance.info(
             f"Row mapping summary -> base_row: {base_row}, min_row_id: {min_row_id}, max_row_id: {max_row_id}, "
-            f"total_rows_needed: {total_rows_needed}, max_needed_row: {max_needed_row}"
+            f"data_rows_count: {len(data_row_ids)}, max_needed_row: {max_needed_row}"
         )
 
         if ws.max_row < max_needed_row:
@@ -1187,9 +1215,8 @@ def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict],
                 ws.append([''] * ws.max_column)
                 ws.row_dimensions[row_num].height = DEFAULT_ROW_HEIGHT_POINTS
 
-        for row_id in range(min_row_id, max_row_id + 1):
-            row_position = row_id - min_row_id
-            row_num = base_row + row_position
+        for row_id in data_row_ids:
+            row_num = row_id_to_row_num[row_id]
 
             ws.row_dimensions[row_num].height = DEFAULT_ROW_HEIGHT_POINTS
 
