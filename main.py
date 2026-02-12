@@ -763,9 +763,11 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                                     x_offset_emu = pixels_to_EMU(x_offset_pixels)
                                     y_offset_emu = pixels_to_EMU(y_offset_pixels)
 
-                                    # Ensure offsets are non-negative
-                                    x_offset_emu = max(0, x_offset_emu)
-                                    y_offset_emu = max(0, y_offset_emu)
+                                    # Ensure offsets are non-negative and within valid range
+                                    # Max offset is approximately 9,525,000 EMU (1000 pixels)
+                                    MAX_OFFSET_EMU = 9525000
+                                    x_offset_emu = max(0, min(x_offset_emu, MAX_OFFSET_EMU))
+                                    y_offset_emu = max(0, min(y_offset_emu, MAX_OFFSET_EMU))
 
                                     logger_instance.info(f"Creating anchor for Row {row_id}: col=0, colOff={x_offset_emu}, row={anchor_row}, rowOff={y_offset_emu}")
                                     marker = AnchorMarker(
@@ -880,15 +882,19 @@ def clean_template_file(template_path: str, logger_instance: logging.Logger) -> 
                         logger_instance.info(f"Skipping external link file: {item}")
                         continue
 
+                    # Get original file info to preserve metadata
+                    info = zip_in.getinfo(item)
                     # Read the file content
                     data = zip_in.read(item)
 
                     # Clean workbook.xml to remove externalReferences
                     if item == 'xl/workbook.xml':
                         try:
-                            # Register namespace to preserve it in output
+                            # Register ALL common namespaces to preserve XML structure
                             ET.register_namespace('', 'http://schemas.openxmlformats.org/spreadsheetml/2006/main')
                             ET.register_namespace('r', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships')
+                            ET.register_namespace('mc', 'http://schemas.openxmlformats.org/markup-compatibility/2006')
+                            ET.register_namespace('x15', 'http://schemas.microsoft.com/office/spreadsheetml/2010/11/main')
 
                             root = ET.fromstring(data)
 
@@ -903,13 +909,19 @@ def clean_template_file(template_path: str, logger_instance: logging.Logger) -> 
                                 root.remove(elem)
                                 logger_instance.info("Removed externalReferences from workbook.xml (without namespace)")
 
-                            data = ET.tostring(root, encoding='utf-8', xml_declaration=True)
+                            # Preserve the original XML declaration and structure
+                            data = ET.tostring(root, encoding='utf-8', xml_declaration=False)
+                            # Add proper XML declaration manually
+                            data = b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' + data
                         except Exception as xml_error:
-                            logger_instance.warning(f"Could not parse workbook.xml: {xml_error}")
+                            logger_instance.warning(f"Could not parse workbook.xml: {xml_error}, using original")
 
                     # Clean workbook.xml.rels to remove external link relationships
                     elif 'workbook.xml.rels' in item:
                         try:
+                            # Register namespace
+                            ET.register_namespace('', 'http://schemas.openxmlformats.org/package/2006/relationships')
+
                             root = ET.fromstring(data)
                             ns = {'r': 'http://schemas.openxmlformats.org/package/2006/relationships'}
 
@@ -922,12 +934,14 @@ def clean_template_file(template_path: str, logger_instance: logging.Logger) -> 
                                     logger_instance.info(f"Removing external link relationship: {rel_id} -> {target}")
                                     root.remove(rel)
 
-                            data = ET.tostring(root, encoding='utf-8', xml_declaration=True)
+                            # Preserve the original XML declaration
+                            data = ET.tostring(root, encoding='utf-8', xml_declaration=False)
+                            data = b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' + data
                         except Exception as xml_error:
-                            logger_instance.warning(f"Could not parse workbook.xml.rels: {xml_error}")
+                            logger_instance.warning(f"Could not parse workbook.xml.rels: {xml_error}, using original")
 
-                    # Write to new ZIP
-                    zip_out.writestr(item, data)
+                    # Write to new ZIP, preserving original compression metadata
+                    zip_out.writestr(info, data)
 
         logger_instance.info(f"Created cleaned template: {cleaned_path}")
 
@@ -1147,8 +1161,10 @@ def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict],
                                             logger_instance.warning(f"EMU dimensions too large for Row {row_id}: {width_emu}x{height_emu}, skipping")
                                         else:
                                             anchor_row = max(0, row_num - 1)
-                                            x_offset_emu = max(0, pixels_to_EMU(x_offset_pixels))
-                                            y_offset_emu = max(0, pixels_to_EMU(y_offset_pixels))
+                                            # Ensure offsets are within valid range (max ~1000 pixels)
+                                            MAX_OFFSET_EMU = 9525000
+                                            x_offset_emu = max(0, min(pixels_to_EMU(x_offset_pixels), MAX_OFFSET_EMU))
+                                            y_offset_emu = max(0, min(pixels_to_EMU(y_offset_pixels), MAX_OFFSET_EMU))
 
                                             marker = AnchorMarker(
                                                 col=0, # Column A
@@ -1342,8 +1358,10 @@ def write_excel_generic(local_filename: str, temp_dir: str, image_data: List[Dic
                                 logger_instance.warning(f"EMU dimensions too large for ExcelRowID {row_id}: {width_emu}x{height_emu}, skipping")
                             else:
                                 anchor_row = max(0, row_num - 1)
-                                x_offset_emu = max(0, pixels_to_EMU(x_offset_pixels))
-                                y_offset_emu = max(0, pixels_to_EMU(y_offset_pixels))
+                                # Ensure offsets are within valid range (max ~1000 pixels)
+                                MAX_OFFSET_EMU = 9525000
+                                x_offset_emu = max(0, min(pixels_to_EMU(x_offset_pixels), MAX_OFFSET_EMU))
+                                y_offset_emu = max(0, min(pixels_to_EMU(y_offset_pixels), MAX_OFFSET_EMU))
 
                                 marker = AnchorMarker(
                                     col=0, # Column A
