@@ -651,14 +651,9 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
 
         logger_instance.info(f"Loading workbook from: {local_filename}")
 
-        # Try to load the workbook with fallback options
-        try:
-            wb = load_workbook(local_filename)
-            logger_instance.info(f"Workbook loaded successfully")
-        except AttributeError as attr_error:
-            logger_instance.warning(f"AttributeError loading workbook: {attr_error}. Trying with data_only=True...")
-            wb = load_workbook(local_filename, data_only=True)
-            logger_instance.info(f"Workbook loaded successfully with data_only=True")
+        # Load the workbook (don't use data_only=True as it breaks image insertion)
+        wb = load_workbook(local_filename)
+        logger_instance.info(f"Workbook loaded successfully")
 
         ws = wb.active
         logger_instance.info(f"Active worksheet: {ws.title}, dimensions: {ws.max_row}x{ws.max_column}")
@@ -882,12 +877,23 @@ def clean_template_file(template_path: str, logger_instance: logging.Logger) -> 
                     # Clean workbook.xml to remove externalReferences
                     if item == 'xl/workbook.xml':
                         try:
+                            # Register namespace to preserve it in output
+                            ET.register_namespace('', 'http://schemas.openxmlformats.org/spreadsheetml/2006/main')
+                            ET.register_namespace('r', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships')
+
                             root = ET.fromstring(data)
-                            # Remove externalReferences element
-                            ns = {'': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
-                            for elem in root.findall('.//externalReferences', ns):
+
+                            # Remove externalReferences element (with and without namespace)
+                            # Try with namespace
+                            for elem in root.findall('.//{http://schemas.openxmlformats.org/spreadsheetml/2006/main}externalReferences'):
                                 root.remove(elem)
-                                logger_instance.info("Removed externalReferences from workbook.xml")
+                                logger_instance.info("Removed externalReferences from workbook.xml (with namespace)")
+
+                            # Try without namespace (fallback)
+                            for elem in root.findall('.//externalReferences'):
+                                root.remove(elem)
+                                logger_instance.info("Removed externalReferences from workbook.xml (without namespace)")
+
                             data = ET.tostring(root, encoding='utf-8', xml_declaration=True)
                         except Exception as xml_error:
                             logger_instance.warning(f"Could not parse workbook.xml: {xml_error}")
@@ -916,17 +922,24 @@ def clean_template_file(template_path: str, logger_instance: logging.Logger) -> 
 
         logger_instance.info(f"Created cleaned template: {cleaned_path}")
 
-        # Verify the cleaned file can be loaded
+        # Verify the cleaned file can be loaded (without data_only to ensure full functionality)
         try:
-            test_wb = load_workbook(cleaned_path, data_only=True)
+            test_wb = load_workbook(cleaned_path)
             test_wb.close()
             logger_instance.info("Verified cleaned template can be loaded successfully")
+            return cleaned_path
         except Exception as verify_error:
-            logger_instance.warning(f"Cleaned file verification failed: {verify_error}")
-            # If verification fails, return original file
-            return template_path
-
-        return cleaned_path
+            logger_instance.error(f"Cleaned file verification failed: {verify_error}")
+            logger_instance.info("Attempting to use original file with data_only=True verification...")
+            # Try to verify original can at least be loaded with data_only
+            try:
+                test_wb2 = load_workbook(template_path, data_only=True)
+                test_wb2.close()
+                logger_instance.warning("Original file can only be loaded with data_only=True - images may not work properly")
+                return template_path
+            except:
+                logger_instance.error("Both cleaned and original files have issues")
+                return template_path
 
     except Exception as e:
         logger_instance.error(f"Failed to clean template file: {e}", exc_info=True)
