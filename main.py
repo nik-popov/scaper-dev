@@ -19,6 +19,11 @@ from aiohttp_retry import RetryClient, ExponentialRetry
 from fastapi import FastAPI, BackgroundTasks
 from openpyxl import load_workbook
 from openpyxl.drawing.image import Image
+
+# CRITICAL FIX: openpyxl 3.1.5 has a bug where image paths are absolute instead of relative
+# This causes Excel to report the file as corrupted because it can't find the images
+# Monkey-patch the Image class to use correct relative paths
+Image._path = "../media/image{0}.{1}"
 from openpyxl.utils import column_index_from_string
 from PIL import Image as PILImage
 from PIL import UnidentifiedImageError, ImageOps
