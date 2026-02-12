@@ -653,44 +653,6 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
         wb = load_workbook(local_filename)
         logger_instance.info(f"Workbook loaded successfully")
 
-        # Diagnose external links BEFORE removing
-        logger_instance.info("=== Diagnosing external links ===")
-        if hasattr(wb, 'external_links'):
-            logger_instance.info(f"external_links attribute exists, value: {wb.external_links}")
-        else:
-            logger_instance.info("No external_links attribute found")
-
-        # Remove external links more thoroughly to prevent corruption
-        try:
-            # Method 1: Clear the external_links list
-            if hasattr(wb, 'external_links'):
-                original_count = len(wb.external_links) if wb.external_links else 0
-                wb.external_links.clear()
-                logger_instance.info(f"Cleared {original_count} external_links")
-
-            # Method 2: Remove defined names that reference external workbooks
-            if hasattr(wb, 'defined_names'):
-                names_to_remove = []
-                for name in wb.defined_names.definedName:
-                    if name.value and '[' in str(name.value):  # External reference contains '['
-                        names_to_remove.append(name.name)
-                        logger_instance.warning(f"Found external reference in defined name '{name.name}': {name.value}")
-                for name in names_to_remove:
-                    try:
-                        del wb.defined_names[name]
-                        logger_instance.info(f"Removed external defined name: {name}")
-                    except Exception as del_error:
-                        logger_instance.error(f"Failed to remove defined name '{name}': {del_error}")
-
-            # Method 3: Check _external_links from the workbook archive
-            if hasattr(wb, '_archive') and hasattr(wb._archive, 'namelist'):
-                external_files = [f for f in wb._archive.namelist() if 'externalLink' in f]
-                if external_files:
-                    logger_instance.error(f"CRITICAL: Template contains external link files in archive: {external_files}")
-                    logger_instance.error("These files cannot be removed after loading - template needs to be cleaned!")
-        except Exception as link_error:
-            logger_instance.error(f"Error removing external links: {link_error}", exc_info=True)
-
         ws = wb.active
         logger_instance.info(f"Active worksheet: {ws.title}, dimensions: {ws.max_row}x{ws.max_column}")
         image_map = {}
@@ -866,6 +828,7 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
             logger_instance.info(f"Excel workbook closed: {local_filename}")
 
         # Validate the saved file
+        logger_instance.info("Validating saved Excel file...")
         if not validate_excel_file(local_filename, logger_instance):
             logger_instance.error(f"Excel file failed validation after save: {local_filename}")
             raise ValueError(f"Generated Excel file is corrupted: {local_filename}")
@@ -876,68 +839,48 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
 
 def clean_template_file(template_path: str, logger_instance: logging.Logger) -> str:
     """
-    Clean external links from template file by recreating the ZIP without external link files.
+    Clean external links from template file using openpyxl to ensure consistency.
     Returns path to cleaned file.
     """
-    import zipfile
-    import tempfile
-
     try:
         cleaned_path = f"{template_path}.cleaned.xlsx"
         logger_instance.info(f"Cleaning template file: {template_path}")
 
-        # Read the original Excel file as a ZIP
-        with zipfile.ZipFile(template_path, 'r') as zip_in:
-            file_list = zip_in.namelist()
-            logger_instance.info(f"Original file contains {len(file_list)} entries")
+        # Load the workbook with openpyxl
+        # Use data_only=False and keep_links=False to minimize external link issues
+        try:
+            wb = load_workbook(template_path, keep_vba=False, data_only=False, keep_links=False)
+        except Exception as load_error:
+            logger_instance.warning(f"Failed to load with keep_links=False: {load_error}. Trying alternative method...")
+            # If keep_links parameter doesn't work, try normal load
+            wb = load_workbook(template_path, keep_vba=False)
 
-            # Identify external link files
-            external_files = [f for f in file_list if 'externalLink' in f.lower()]
-            workbook_rels = [f for f in file_list if 'workbook.xml.rels' in f]
+        # Clear external links using openpyxl's methods
+        if hasattr(wb, 'external_links') and wb.external_links:
+            original_count = len(wb.external_links)
+            wb.external_links.clear()
+            logger_instance.info(f"Cleared {original_count} external links from workbook")
 
-            if external_files:
-                logger_instance.warning(f"Found external link files to remove: {external_files}")
+        # Remove defined names that reference external workbooks
+        if hasattr(wb, 'defined_names'):
+            names_to_remove = []
+            for name in wb.defined_names.definedName:
+                if name.value and '[' in str(name.value):  # External reference contains '['
+                    names_to_remove.append(name.name)
+                    logger_instance.info(f"Found external reference in defined name '{name.name}': {name.value}")
 
-            # Create new ZIP without external link files
-            with zipfile.ZipFile(cleaned_path, 'w', zipfile.ZIP_DEFLATED) as zip_out:
-                for item in file_list:
-                    # Skip external link files
-                    if 'externalLink' in item.lower():
-                        logger_instance.info(f"Skipping: {item}")
-                        continue
+            for name in names_to_remove:
+                try:
+                    del wb.defined_names[name]
+                    logger_instance.info(f"Removed external defined name: {name}")
+                except Exception as del_error:
+                    logger_instance.warning(f"Failed to remove defined name '{name}': {del_error}")
 
-                    # Read the file content
-                    data = zip_in.read(item)
-
-                    # If it's workbook.xml.rels, clean external link references
-                    if 'workbook.xml.rels' in item:
-                        try:
-                            import xml.etree.ElementTree as ET
-                            root = ET.fromstring(data)
-
-                            # Remove Relationship elements that point to externalLinks
-                            namespace = {'r': 'http://schemas.openxmlformats.org/package/2006/relationships'}
-                            relationships = root.findall('.//r:Relationship', namespace)
-                            original_count = len(relationships)
-
-                            for rel in list(relationships):
-                                target = rel.get('Target', '')
-                                rel_type = rel.get('Type', '')
-                                if 'externalLink' in target or 'externalLink' in rel_type:
-                                    logger_instance.info(f"Removing external link relationship: {rel.get('Id')} -> {target}")
-                                    root.remove(rel)
-
-                            new_count = len(root.findall('.//r:Relationship', namespace))
-                            if new_count < original_count:
-                                data = ET.tostring(root, encoding='utf-8')
-                                logger_instance.info(f"Cleaned workbook.xml.rels: {original_count} -> {new_count} relationships")
-                        except Exception as xml_error:
-                            logger_instance.warning(f"Could not parse {item} as XML: {xml_error}")
-
-                    # Write to new ZIP
-                    zip_out.writestr(item, data)
-
+        # Save the cleaned workbook
+        wb.save(cleaned_path)
+        wb.close()
         logger_instance.info(f"Created cleaned template: {cleaned_path}")
+
         return cleaned_path
 
     except Exception as e:
@@ -1033,21 +976,6 @@ def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict],
         local_filename = clean_template_file(local_filename, logger_instance)
 
         wb = load_workbook(local_filename)
-
-        # Remove external links more thoroughly to prevent corruption
-        try:
-            if hasattr(wb, 'external_links'):
-                wb.external_links.clear()
-            if hasattr(wb, 'defined_names'):
-                names_to_remove = [name.name for name in wb.defined_names.definedName if name.value and '[' in str(name.value)]
-                for name in names_to_remove:
-                    try:
-                        del wb.defined_names[name]
-                    except:
-                        pass
-        except Exception as link_error:
-            logger_instance.warning(f"Error removing external links: {link_error}")
-
         ws = wb.active
         image_map = {int(Path(f).stem): f for f in os.listdir(temp_dir) if Path(f).stem.isdigit()}
         if populate_msrp and not re.match(r'^[A-Z]+$', target_column):
@@ -1210,21 +1138,6 @@ def write_excel_generic(local_filename: str, temp_dir: str, image_data: List[Dic
         local_filename = clean_template_file(local_filename, logger_instance)
 
         wb = load_workbook(local_filename)
-
-        # Remove external links more thoroughly to prevent corruption
-        try:
-            if hasattr(wb, 'external_links'):
-                wb.external_links.clear()
-            if hasattr(wb, 'defined_names'):
-                names_to_remove = [name.name for name in wb.defined_names.definedName if name.value and '[' in str(name.value)]
-                for name in names_to_remove:
-                    try:
-                        del wb.defined_names[name]
-                    except:
-                        pass
-        except Exception as link_error:
-            logger_instance.warning(f"Error removing external links: {link_error}")
-
         ws = wb.active
 
         # Clear existing images for FileTypeID 10
