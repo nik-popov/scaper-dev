@@ -3,6 +3,7 @@ import logging
 import os
 import shutil
 import time
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from typing import Optional, List, Tuple, Dict
@@ -19,11 +20,6 @@ from aiohttp_retry import RetryClient, ExponentialRetry
 from fastapi import FastAPI, BackgroundTasks
 from openpyxl import load_workbook
 from openpyxl.drawing.image import Image
-
-# CRITICAL FIX: openpyxl 3.1.5 has a bug where image paths are absolute instead of relative
-# This causes Excel to report the file as corrupted because it can't find the images
-# Monkey-patch the Image class to use correct relative paths
-Image._path = "../media/image{0}.{1}"
 from openpyxl.utils import column_index_from_string
 from PIL import Image as PILImage
 from PIL import UnidentifiedImageError, ImageOps
@@ -632,6 +628,46 @@ def get_valid_indices_with_padding(valid_indices, max_index, pad=5):
         padded.update(range(start, end))
     return sorted(padded)
 
+def fix_excel_image_paths(excel_file: str, logger_instance: logging.Logger) -> bool:
+    """
+    Fix openpyxl 3.1.5 bug where image relationship paths are absolute instead of relative.
+    Post-processes the saved Excel file to change /xl/media/ to ../media/ in drawing relationships.
+    """
+    try:
+        logger_instance.info(f"Fixing image paths in: {excel_file}")
+
+        # Create a temporary file for the fixed version
+        temp_file = excel_file + ".tmp"
+
+        # Open the Excel file as a ZIP
+        with zipfile.ZipFile(excel_file, 'r') as zip_read:
+            with zipfile.ZipFile(temp_file, 'w', zipfile.ZIP_DEFLATED) as zip_write:
+                for item in zip_read.infolist():
+                    data = zip_read.read(item.filename)
+
+                    # Fix the drawing relationships file
+                    if item.filename.endswith('drawings/_rels/drawing1.xml.rels'):
+                        data_str = data.decode('utf-8')
+                        # Replace absolute paths with relative paths
+                        data_str = data_str.replace('Target="/xl/media/', 'Target="../media/')
+                        data = data_str.encode('utf-8')
+                        logger_instance.info(f"Fixed image paths in {item.filename}")
+
+                    zip_write.writestr(item, data)
+
+        # Replace the original file with the fixed one
+        shutil.move(temp_file, excel_file)
+        logger_instance.info(f"Successfully fixed image paths in: {excel_file}")
+        return True
+
+    except Exception as e:
+        logger_instance.error(f"Failed to fix image paths in {excel_file}: {e}", exc_info=True)
+        # Clean up temp file if it exists
+        if os.path.exists(temp_file):
+            os.remove(temp_file)
+        return False
+
+
 def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, logger_instance: logging.Logger, row_offset: int = 0):
     try:
         logger_instance.info(f"=== Starting write_excel_distro ===")
@@ -893,6 +929,10 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
         finally:
             wb.close()
             logger_instance.info(f"Excel workbook closed: {original_filename}")
+
+        # CRITICAL FIX: Fix openpyxl 3.1.5 bug with absolute image paths
+        if not fix_excel_image_paths(original_filename, logger_instance):
+            logger_instance.warning(f"Failed to fix image paths, file may be corrupted")
 
         # Clean up the temporary cleaned file
         if cleaned_filename != original_filename and os.path.exists(cleaned_filename):
@@ -1361,6 +1401,10 @@ def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict],
             wb.close()
             logger_instance.info(f"Excel workbook closed: {original_filename}")
 
+        # CRITICAL FIX: Fix openpyxl 3.1.5 bug with absolute image paths
+        if not fix_excel_image_paths(original_filename, logger_instance):
+            logger_instance.warning(f"Failed to fix image paths, file may be corrupted")
+
         # Clean up the temporary cleaned file
         if cleaned_filename != original_filename and os.path.exists(cleaned_filename):
             try:
@@ -1565,6 +1609,10 @@ def write_excel_generic(local_filename: str, temp_dir: str, image_data: List[Dic
         finally:
             wb.close()
             logger_instance.info(f"Excel workbook closed: {original_filename}")
+
+        # CRITICAL FIX: Fix openpyxl 3.1.5 bug with absolute image paths
+        if not fix_excel_image_paths(original_filename, logger_instance):
+            logger_instance.warning(f"Failed to fix image paths, file may be corrupted")
 
         # Clean up the temporary cleaned file
         if cleaned_filename != original_filename and os.path.exists(cleaned_filename):
