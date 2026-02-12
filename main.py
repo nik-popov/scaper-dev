@@ -309,6 +309,7 @@ def get_last_non_empty_row(ws, column: str, header_row: int, logger_instance: lo
 
 def verify_and_process_image(image_path: str, logger_instance: logging.Logger) -> bool:
     """Verify, crop, and process image in memory to avoid corruption."""
+    img = None
     try:
         # Check if file exists first
         if not os.path.exists(image_path):
@@ -334,7 +335,7 @@ def verify_and_process_image(image_path: str, logger_instance: logging.Logger) -
         ratio = min(MAX_IMAGE_DIMENSION / w, MAX_IMAGE_DIMENSION / h)
         new_w = int(w * ratio)
         new_h = int(h * ratio)
-        
+
         if (new_w, new_h) != (w, h):
             img = img.resize((new_w, new_h), PILImage.Resampling.LANCZOS)
             logger_instance.info(f"Resized image {image_path} from {w}x{h} to {new_w}x{new_h} (max dim {MAX_IMAGE_DIMENSION})")
@@ -346,6 +347,13 @@ def verify_and_process_image(image_path: str, logger_instance: logging.Logger) -
     except Exception as e:
         logger_instance.error(f"Image verification failed for {image_path}: {e}", exc_info=True)
         return False
+    finally:
+        # Ensure image is closed to prevent file handle leaks
+        if img is not None:
+            try:
+                img.close()
+            except:
+                pass
 
 def process_image_remove_lines(image_path: str, img: PILImage.Image, logger_instance: logging.Logger) -> PILImage.Image:
     """Process image in memory to remove uniform lines and borders, preventing smearing."""
@@ -583,8 +591,14 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
 
         logger_instance.info("Setting worksheet view to A1")
         ws.sheet_view.topLeftCell = 'A1'
-        wb.save(local_filename)
-        logger_instance.info(f"Excel file saved: {local_filename}")
+
+        # Save and close workbook properly to prevent corruption
+        try:
+            wb.save(local_filename)
+            logger_instance.info(f"Excel file saved: {local_filename}")
+        finally:
+            wb.close()
+            logger_instance.info(f"Excel workbook closed: {local_filename}")
     except Exception as e:
         logger_instance.error(f"Error writing to DISTRO Excel file: {e}", exc_info=True)
         raise
@@ -731,8 +745,14 @@ def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict],
 
         logger_instance.info("Setting worksheet view to A1")
         ws.sheet_view.topLeftCell = 'A1'
-        wb.save(local_filename)
-        logger_instance.info(f"MSRP Excel file saved: {local_filename}")
+
+        # Save and close workbook properly to prevent corruption
+        try:
+            wb.save(local_filename)
+            logger_instance.info(f"MSRP Excel file saved: {local_filename}")
+        finally:
+            wb.close()
+            logger_instance.info(f"Excel workbook closed: {local_filename}")
     except Exception as e:
         logger_instance.error(f"Error writing to MSRP Excel file: {e}", exc_info=True)
         raise
@@ -868,7 +888,14 @@ def write_excel_generic(local_filename: str, temp_dir: str, image_data: List[Dic
 
         logger_instance.info("Setting worksheet view to A1")
         ws.sheet_view.topLeftCell = 'A1'
-        wb.save(local_filename)
+
+        # Save and close workbook properly to prevent corruption
+        try:
+            wb.save(local_filename)
+            logger_instance.info(f"Generic Excel file saved: {local_filename}")
+        finally:
+            wb.close()
+            logger_instance.info(f"Excel workbook closed: {local_filename}")
     except Exception as e:
         logger_instance.error(f"Error writing to generic Excel file: {e}", exc_info=True)
         raise
