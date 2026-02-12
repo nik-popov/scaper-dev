@@ -342,6 +342,25 @@ def verify_and_process_image(image_path: str, logger_instance: logging.Logger) -
 
         # Save processed image once
         img.save(image_path, 'PNG', compress_level=6, quality=95)
+
+        # Verify the saved image is valid
+        if not os.path.exists(image_path):
+            logger_instance.error(f"Image file disappeared after saving: {image_path}")
+            return False
+
+        file_size = os.path.getsize(image_path)
+        if file_size < MIN_IMAGE_SIZE:
+            logger_instance.error(f"Saved image file too small ({file_size} bytes): {image_path}")
+            return False
+
+        # Try to re-open the saved image to ensure it's valid
+        try:
+            with PILImage.open(image_path) as verify_img:
+                verify_img.verify()
+        except Exception as verify_error:
+            logger_instance.error(f"Saved image failed verification: {image_path}, error: {verify_error}")
+            return False
+
         logger_instance.info(f"Image verified and processed: {image_path}")
         return True
     except Exception as e:
@@ -531,35 +550,49 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
             image_path = image_map.get(row_id)
             if image_path:
                 if verify_and_process_image(image_path, logger_instance):
-                    img = Image(image_path)
-                    img_height_pixels = getattr(img, 'height', 0)
-                    img_width_pixels = getattr(img, 'width', 0)
-                    img_height_points = img_height_pixels * 72 / 96
-                    img_width_points = img_width_pixels / 7
+                    try:
+                        # Validate image file one more time before inserting
+                        if not os.path.exists(image_path) or os.path.getsize(image_path) < MIN_IMAGE_SIZE:
+                            logger_instance.warning(f"Image file invalid after processing for Row {row_id}, skipping")
+                        else:
+                            # Try to create openpyxl Image object with error handling
+                            img = Image(image_path)
+                            img_height_pixels = getattr(img, 'height', 0)
+                            img_width_pixels = getattr(img, 'width', 0)
 
-                    required_width = img_width_points + PADDING_POINTS * 2
-                    current_width = ws.column_dimensions['A'].width or 8.43
-                    ws.column_dimensions['A'].width = min(CELL_WIDTH_POINTS, max(current_width, required_width))
+                            # Validate dimensions
+                            if img_height_pixels <= 0 or img_width_pixels <= 0:
+                                logger_instance.warning(f"Invalid image dimensions for Row {row_id}: {img_width_pixels}x{img_height_pixels}, skipping")
+                            else:
+                                img_height_points = img_height_pixels * 72 / 96
+                                img_width_points = img_width_pixels / 7
 
-                    cell_width_pixels = ws.column_dimensions['A'].width * 7
-                    cell_height_pixels = points_to_pixels(CELL_HEIGHT_POINTS)
-                    x_offset_pixels = max(0, (cell_width_pixels - img_width_pixels) / 2)
-                    y_offset_pixels = max(0, (cell_height_pixels - img_height_pixels) / 2)
+                                required_width = img_width_points + PADDING_POINTS * 2
+                                current_width = ws.column_dimensions['A'].width or 8.43
+                                ws.column_dimensions['A'].width = min(CELL_WIDTH_POINTS, max(current_width, required_width))
 
-                    width_emu = pixels_to_EMU(img_width_pixels)
-                    height_emu = pixels_to_EMU(img_height_pixels)
-                    marker = AnchorMarker(
-                        col=0,
-                        colOff=pixels_to_EMU(x_offset_pixels),
-                        row=max(0, row_num - 1),
-                        rowOff=pixels_to_EMU(y_offset_pixels)
-                    )
-                    img.anchor = OneCellAnchor(_from=marker, ext=XDRPositiveSize2D(width_emu, height_emu))
-                    ws.add_image(img)
-                    logger_instance.info(
-                        f"Added image for Row {row_id} at Excel row {row_num}, "
-                        f"height={CELL_HEIGHT_POINTS} points, width={ws.column_dimensions['A'].width:.2f} points"
-                    )
+                                cell_width_pixels = ws.column_dimensions['A'].width * 7
+                                cell_height_pixels = points_to_pixels(CELL_HEIGHT_POINTS)
+                                x_offset_pixels = max(0, (cell_width_pixels - img_width_pixels) / 2)
+                                y_offset_pixels = max(0, (cell_height_pixels - img_height_pixels) / 2)
+
+                                width_emu = pixels_to_EMU(img_width_pixels)
+                                height_emu = pixels_to_EMU(img_height_pixels)
+                                marker = AnchorMarker(
+                                    col=0,
+                                    colOff=pixels_to_EMU(x_offset_pixels),
+                                    row=max(0, row_num - 1),
+                                    rowOff=pixels_to_EMU(y_offset_pixels)
+                                )
+                                img.anchor = OneCellAnchor(_from=marker, ext=XDRPositiveSize2D(width_emu, height_emu))
+                                ws.add_image(img)
+                                logger_instance.info(
+                                    f"Added image for Row {row_id} at Excel row {row_num}, "
+                                    f"height={CELL_HEIGHT_POINTS} points, width={ws.column_dimensions['A'].width:.2f} points"
+                                )
+                    except Exception as img_error:
+                        logger_instance.error(f"Failed to insert image for Row {row_id}: {img_error}", exc_info=True)
+                        logger_instance.warning(f"Skipping image insertion for Row {row_id}, writing metadata only")
                 else:
                     logger_instance.warning(f"Image processing failed for Row {row_id}, writing metadata only")
             else:
@@ -605,6 +638,7 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
 
 
 def find_header_row_index(excel_file: str, logger_instance: logging.Logger) -> Optional[int]:
+    wb = None
     try:
         wb = load_workbook(excel_file, read_only=True)
         ws = wb.active
@@ -623,6 +657,12 @@ def find_header_row_index(excel_file: str, logger_instance: logging.Logger) -> O
     except Exception as e:
         logger_instance.error(f"Could not find header row: {e}")
         return None
+    finally:
+        if wb is not None:
+            try:
+                wb.close()
+            except:
+                pass
 
 def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, target_column: str, row_offset: int, logger_instance: logging.Logger, populate_images: bool = True, populate_msrp: bool = True):
     try:
@@ -693,38 +733,51 @@ def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict],
                     if row_id in image_map:
                         image_path = os.path.join(temp_dir, image_map[row_id])
                         if verify_and_process_image(image_path, logger_instance):
-                            img = Image(image_path)
-                            
-                            img_height_pixels = img.height if hasattr(img, 'height') else 0
-                            img_width_pixels = img.width if hasattr(img, 'width') else 0
-                            img_height_points = img_height_pixels * 72 / 96
-                            
-                            new_height = max(DEFAULT_ROW_HEIGHT_POINTS, img_height_points)
-                            ws.row_dimensions[row_num].height = new_height
-                            
-                            # Calculate dimensions for centering
-                            col_width_chars = ws.column_dimensions['A'].width
-                            if col_width_chars is None:
-                                col_width_chars = 8.43
-                            cell_width_pixels = col_width_chars * 7
-                            cell_height_pixels = points_to_pixels(new_height)
-                            
-                            x_offset_pixels = max(0, (cell_width_pixels - img_width_pixels) / 2)
-                            y_offset_pixels = max(0, (cell_height_pixels - img_height_pixels) / 2)
-                            
-                            width_emu = pixels_to_EMU(img_width_pixels)
-                            height_emu = pixels_to_EMU(img_height_pixels)
-                            
-                            marker = AnchorMarker(
-                                col=0, # Column A
-                                colOff=pixels_to_EMU(x_offset_pixels),
-                                row=row_num - 1,
-                                rowOff=pixels_to_EMU(y_offset_pixels)
-                            )
-                            img.anchor = OneCellAnchor(_from=marker, ext=XDRPositiveSize2D(width_emu, height_emu))
-                            ws.add_image(img)
-                            
-                            logger_instance.info(f"Added image for Row {row_id} at Excel row {row_num}, height set to {ws.row_dimensions[row_num].height} points")
+                            try:
+                                # Validate image file before inserting
+                                if not os.path.exists(image_path) or os.path.getsize(image_path) < MIN_IMAGE_SIZE:
+                                    logger_instance.warning(f"Image file invalid after processing for Row {row_id}, skipping")
+                                else:
+                                    img = Image(image_path)
+
+                                    img_height_pixels = img.height if hasattr(img, 'height') else 0
+                                    img_width_pixels = img.width if hasattr(img, 'width') else 0
+
+                                    # Validate dimensions
+                                    if img_height_pixels <= 0 or img_width_pixels <= 0:
+                                        logger_instance.warning(f"Invalid image dimensions for Row {row_id}: {img_width_pixels}x{img_height_pixels}, skipping")
+                                    else:
+                                        img_height_points = img_height_pixels * 72 / 96
+
+                                        new_height = max(DEFAULT_ROW_HEIGHT_POINTS, img_height_points)
+                                        ws.row_dimensions[row_num].height = new_height
+
+                                        # Calculate dimensions for centering
+                                        col_width_chars = ws.column_dimensions['A'].width
+                                        if col_width_chars is None:
+                                            col_width_chars = 8.43
+                                        cell_width_pixels = col_width_chars * 7
+                                        cell_height_pixels = points_to_pixels(new_height)
+
+                                        x_offset_pixels = max(0, (cell_width_pixels - img_width_pixels) / 2)
+                                        y_offset_pixels = max(0, (cell_height_pixels - img_height_pixels) / 2)
+
+                                        width_emu = pixels_to_EMU(img_width_pixels)
+                                        height_emu = pixels_to_EMU(img_height_pixels)
+
+                                        marker = AnchorMarker(
+                                            col=0, # Column A
+                                            colOff=pixels_to_EMU(x_offset_pixels),
+                                            row=row_num - 1,
+                                            rowOff=pixels_to_EMU(y_offset_pixels)
+                                        )
+                                        img.anchor = OneCellAnchor(_from=marker, ext=XDRPositiveSize2D(width_emu, height_emu))
+                                        ws.add_image(img)
+
+                                        logger_instance.info(f"Added image for Row {row_id} at Excel row {row_num}, height set to {ws.row_dimensions[row_num].height} points")
+                            except Exception as img_error:
+                                logger_instance.error(f"Failed to insert image for Row {row_id}: {img_error}", exc_info=True)
+                                logger_instance.warning(f"Skipping image insertion for Row {row_id}, writing MSRP only")
                         else:
                             logger_instance.warning(f"Image processing failed for Row {row_id}, writing MSRP only")
                     else:
@@ -849,40 +902,53 @@ def write_excel_generic(local_filename: str, temp_dir: str, image_data: List[Dic
 
             image_path = str(image_path_obj)
             if verify_and_process_image(image_path, logger_instance):
-                img = Image(image_path)
-                
-                img_height_pixels = getattr(img, 'height', 0)
-                img_width_pixels = getattr(img, 'width', 0)
-                img_height_points = img_height_pixels * 72 / 96
-                current_height = ws.row_dimensions[row_num].height
-                new_height = max(img_height_points, current_height or default_row_height)
-                ws.row_dimensions[row_num].height = new_height
-                
-                # Calculate dimensions for centering
-                col_width_chars = ws.column_dimensions['A'].width
-                if col_width_chars is None:
-                    col_width_chars = 8.43
-                cell_width_pixels = col_width_chars * 7
-                cell_height_pixels = points_to_pixels(new_height)
-                
-                x_offset_pixels = max(0, (cell_width_pixels - img_width_pixels) / 2)
-                y_offset_pixels = max(0, (cell_height_pixels - img_height_pixels) / 2)
-                
-                width_emu = pixels_to_EMU(img_width_pixels)
-                height_emu = pixels_to_EMU(img_height_pixels)
-                
-                marker = AnchorMarker(
-                    col=0, # Column A
-                    colOff=pixels_to_EMU(x_offset_pixels),
-                    row=row_num - 1,
-                    rowOff=pixels_to_EMU(y_offset_pixels)
-                )
-                img.anchor = OneCellAnchor(_from=marker, ext=XDRPositiveSize2D(width_emu, height_emu))
-                ws.add_image(img)
+                try:
+                    # Validate image file before inserting
+                    if not os.path.exists(image_path) or os.path.getsize(image_path) < MIN_IMAGE_SIZE:
+                        logger_instance.warning(f"Image file invalid after processing for ExcelRowID {row_id}, skipping")
+                    else:
+                        img = Image(image_path)
 
-                logger_instance.info(
-                    f"Added image for ExcelRowID {row_id} at Excel row {row_num} (absolute_mapping={use_absolute_row_ids})"
-                )
+                        img_height_pixels = getattr(img, 'height', 0)
+                        img_width_pixels = getattr(img, 'width', 0)
+
+                        # Validate dimensions
+                        if img_height_pixels <= 0 or img_width_pixels <= 0:
+                            logger_instance.warning(f"Invalid image dimensions for ExcelRowID {row_id}: {img_width_pixels}x{img_height_pixels}, skipping")
+                        else:
+                            img_height_points = img_height_pixels * 72 / 96
+                            current_height = ws.row_dimensions[row_num].height
+                            new_height = max(img_height_points, current_height or default_row_height)
+                            ws.row_dimensions[row_num].height = new_height
+
+                            # Calculate dimensions for centering
+                            col_width_chars = ws.column_dimensions['A'].width
+                            if col_width_chars is None:
+                                col_width_chars = 8.43
+                            cell_width_pixels = col_width_chars * 7
+                            cell_height_pixels = points_to_pixels(new_height)
+
+                            x_offset_pixels = max(0, (cell_width_pixels - img_width_pixels) / 2)
+                            y_offset_pixels = max(0, (cell_height_pixels - img_height_pixels) / 2)
+
+                            width_emu = pixels_to_EMU(img_width_pixels)
+                            height_emu = pixels_to_EMU(img_height_pixels)
+
+                            marker = AnchorMarker(
+                                col=0, # Column A
+                                colOff=pixels_to_EMU(x_offset_pixels),
+                                row=row_num - 1,
+                                rowOff=pixels_to_EMU(y_offset_pixels)
+                            )
+                            img.anchor = OneCellAnchor(_from=marker, ext=XDRPositiveSize2D(width_emu, height_emu))
+                            ws.add_image(img)
+
+                            logger_instance.info(
+                                f"Added image for ExcelRowID {row_id} at Excel row {row_num} (absolute_mapping={use_absolute_row_ids})"
+                            )
+                except Exception as img_error:
+                    logger_instance.error(f"Failed to insert image for ExcelRowID {row_id}: {img_error}", exc_info=True)
+                    logger_instance.warning(f"Skipping image insertion for ExcelRowID {row_id}")
             else:
                 logger_instance.warning(f"Image verification failed for ExcelRowID {row_id} at path {image_path}")
 
