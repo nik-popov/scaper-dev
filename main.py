@@ -658,6 +658,13 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
 
         ws = wb.active
         logger_instance.info(f"Active worksheet: {ws.title}, dimensions: {ws.max_row}x{ws.max_column}")
+
+        # CRITICAL FIX: Clear ALL existing images to prevent TwoCellAnchor/OneCellAnchor conflicts
+        if hasattr(ws, '_images') and ws._images:
+            existing_count = len(ws._images)
+            ws._images = []
+            logger_instance.info(f"Cleared {existing_count} existing images from template to prevent anchor conflicts")
+
         image_map = {}
         for path_obj in Path(temp_dir).iterdir():
             if not path_obj.is_file():
@@ -769,14 +776,17 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                                     x_offset_emu = max(0, min(x_offset_emu, MAX_OFFSET_EMU))
                                     y_offset_emu = max(0, min(y_offset_emu, MAX_OFFSET_EMU))
 
-                                    logger_instance.info(f"Creating anchor for Row {row_id}: col=0, colOff={x_offset_emu}, row={anchor_row}, rowOff={y_offset_emu}")
+                                    logger_instance.info(
+                                        f"Creating anchor for Row {row_id} at Excel row {row_num}: "
+                                        f"marker(col=0, colOff={x_offset_emu}, row={anchor_row}, rowOff={y_offset_emu}), "
+                                        f"size({width_emu}x{height_emu} EMU = {img_width_pixels}x{img_height_pixels} px)"
+                                    )
                                     marker = AnchorMarker(
                                         col=0,
                                         colOff=x_offset_emu,
                                         row=anchor_row,
                                         rowOff=y_offset_emu
                                     )
-                                    logger_instance.info(f"Creating OneCellAnchor with dimensions: {width_emu}x{height_emu} EMU")
                                     img.anchor = OneCellAnchor(_from=marker, ext=XDRPositiveSize2D(width_emu, height_emu))
 
                                     image_count_before = len(ws._images) if hasattr(ws, '_images') else 0
@@ -1003,11 +1013,20 @@ def validate_excel_file(excel_file: str, logger_instance: logging.Logger) -> boo
             # Validate each image
             for idx, img in enumerate(ws._images):
                 try:
-                    img_path = getattr(img, '_path', 'unknown')
                     img_width = getattr(img, 'width', 0)
                     img_height = getattr(img, 'height', 0)
                     anchor = getattr(img, 'anchor', None)
-                    logger_instance.info(f"  Image {idx+1}: {img_width}x{img_height}, anchor={type(anchor).__name__ if anchor else 'None'}")
+                    anchor_type = type(anchor).__name__ if anchor else 'None'
+
+                    # Get detailed anchor info
+                    anchor_details = ""
+                    if anchor and hasattr(anchor, '_from'):
+                        marker = anchor._from
+                        anchor_details = f", pos(col={getattr(marker, 'col', '?')}, row={getattr(marker, 'row', '?')})"
+                        if hasattr(marker, 'colOff') and hasattr(marker, 'rowOff'):
+                            anchor_details += f", off({getattr(marker, 'colOff', 0)}, {getattr(marker, 'rowOff', 0)})"
+
+                    logger_instance.info(f"  Image {idx+1}: {img_width}x{img_height}, anchor={anchor_type}{anchor_details}")
                 except Exception as img_check_error:
                     logger_instance.warning(f"  Image {idx+1} validation warning: {img_check_error}")
 
@@ -1060,6 +1079,13 @@ def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict],
         # Load the workbook
         wb = load_workbook(cleaned_filename)
         ws = wb.active
+
+        # CRITICAL FIX: Clear ALL existing images to prevent TwoCellAnchor/OneCellAnchor conflicts
+        if hasattr(ws, '_images') and ws._images:
+            existing_count = len(ws._images)
+            ws._images = []
+            logger_instance.info(f"Cleared {existing_count} existing images from template to prevent anchor conflicts")
+
         image_map = {int(Path(f).stem): f for f in os.listdir(temp_dir) if Path(f).stem.isdigit()}
         if populate_msrp and not re.match(r'^[A-Z]+$', target_column):
             raise ValueError(f"Invalid target_column: {target_column}. Must be a valid Excel column letter (e.g., 'A', 'B', 'AA').")
@@ -1235,11 +1261,12 @@ def write_excel_generic(local_filename: str, temp_dir: str, image_data: List[Dic
         wb = load_workbook(cleaned_filename)
         ws = wb.active
 
-        # Clear existing images for FileTypeID 10
-        if file_type_id == 10:
-            if hasattr(ws, '_images'):
-                ws._images = []
-                logger_instance.info("Cleared existing images for FileTypeID 10")
+        # CRITICAL FIX: Clear ALL existing images to prevent TwoCellAnchor/OneCellAnchor conflicts
+        # This prevents drawing XML corruption when mixing anchor types
+        if hasattr(ws, '_images') and ws._images:
+            existing_count = len(ws._images)
+            ws._images = []
+            logger_instance.info(f"Cleared {existing_count} existing images from template to prevent anchor conflicts")
 
         temp_path = Path(temp_dir)
         image_map = {}
