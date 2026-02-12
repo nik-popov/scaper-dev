@@ -634,12 +634,13 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
 
         # Clean the template file to remove external links
         logger_instance.info("Cleaning template file to remove external links...")
-        local_filename = clean_template_file(local_filename, logger_instance)
-        logger_instance.info(f"Using cleaned template: {local_filename}")
+        original_filename = local_filename
+        cleaned_filename = clean_template_file(local_filename, logger_instance)
+        logger_instance.info(f"Using cleaned template: {cleaned_filename}")
 
         # Validate template file BEFORE loading
         logger_instance.info("Validating template file before processing...")
-        if not validate_excel_file(local_filename, logger_instance):
+        if not validate_excel_file(cleaned_filename, logger_instance):
             logger_instance.warning("Template file has validation warnings, but proceeding...")
 
         header_row = int(header_row)
@@ -649,10 +650,10 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
         if row_offset < 0:
             logger_instance.warning(f"Negative row_offset {row_offset} provided. Ensure this is intentional.")
 
-        logger_instance.info(f"Loading workbook from: {local_filename}")
+        logger_instance.info(f"Loading workbook from: {cleaned_filename}")
 
-        # Load the workbook (don't use data_only=True as it breaks image insertion)
-        wb = load_workbook(local_filename)
+        # Load the workbook
+        wb = load_workbook(cleaned_filename)
         logger_instance.info(f"Workbook loaded successfully")
 
         ws = wb.active
@@ -821,19 +822,27 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
         logger_instance.info("Setting worksheet view to A1")
         ws.sheet_view.topLeftCell = 'A1'
 
-        # Save and close workbook properly to prevent corruption
+        # Save to ORIGINAL filename (not the cleaned one) so upload works correctly
         try:
-            wb.save(local_filename)
-            logger_instance.info(f"Excel file saved: {local_filename}, size: {os.path.getsize(local_filename)} bytes")
+            wb.save(original_filename)
+            logger_instance.info(f"Excel file saved: {original_filename}, size: {os.path.getsize(original_filename)} bytes")
         finally:
             wb.close()
-            logger_instance.info(f"Excel workbook closed: {local_filename}")
+            logger_instance.info(f"Excel workbook closed: {original_filename}")
+
+        # Clean up the temporary cleaned file
+        if cleaned_filename != original_filename and os.path.exists(cleaned_filename):
+            try:
+                os.remove(cleaned_filename)
+                logger_instance.info(f"Removed temporary cleaned file: {cleaned_filename}")
+            except:
+                pass
 
         # Validate the saved file
         logger_instance.info("Validating saved Excel file...")
-        if not validate_excel_file(local_filename, logger_instance):
-            logger_instance.error(f"Excel file failed validation after save: {local_filename}")
-            raise ValueError(f"Generated Excel file is corrupted: {local_filename}")
+        if not validate_excel_file(original_filename, logger_instance):
+            logger_instance.error(f"Excel file failed validation after save: {original_filename}")
+            raise ValueError(f"Generated Excel file is corrupted: {original_filename}")
     except Exception as e:
         logger_instance.error(f"Error writing to DISTRO Excel file: {e}", exc_info=True)
         raise
@@ -1031,15 +1040,11 @@ def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict],
     try:
         # Clean the file to remove external links
         logger_instance.info("Cleaning file to remove external links...")
-        local_filename = clean_template_file(local_filename, logger_instance)
+        original_filename = local_filename
+        cleaned_filename = clean_template_file(local_filename, logger_instance)
 
-        # Try to load the workbook with fallback options
-        try:
-            wb = load_workbook(local_filename)
-        except AttributeError as attr_error:
-            logger_instance.warning(f"AttributeError loading workbook: {attr_error}. Trying with data_only=True...")
-            wb = load_workbook(local_filename, data_only=True)
-
+        # Load the workbook
+        wb = load_workbook(cleaned_filename)
         ws = wb.active
         image_map = {int(Path(f).stem): f for f in os.listdir(temp_dir) if Path(f).stem.isdigit()}
         if populate_msrp and not re.match(r'^[A-Z]+$', target_column):
@@ -1179,18 +1184,26 @@ def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict],
         logger_instance.info("Setting worksheet view to A1")
         ws.sheet_view.topLeftCell = 'A1'
 
-        # Save and close workbook properly to prevent corruption
+        # Save to ORIGINAL filename (not the cleaned one) so upload works correctly
         try:
-            wb.save(local_filename)
-            logger_instance.info(f"MSRP Excel file saved: {local_filename}, size: {os.path.getsize(local_filename)} bytes")
+            wb.save(original_filename)
+            logger_instance.info(f"MSRP Excel file saved: {original_filename}, size: {os.path.getsize(original_filename)} bytes")
         finally:
             wb.close()
-            logger_instance.info(f"Excel workbook closed: {local_filename}")
+            logger_instance.info(f"Excel workbook closed: {original_filename}")
+
+        # Clean up the temporary cleaned file
+        if cleaned_filename != original_filename and os.path.exists(cleaned_filename):
+            try:
+                os.remove(cleaned_filename)
+                logger_instance.info(f"Removed temporary cleaned file: {cleaned_filename}")
+            except:
+                pass
 
         # Validate the saved file
-        if not validate_excel_file(local_filename, logger_instance):
-            logger_instance.error(f"Excel file failed validation after save: {local_filename}")
-            raise ValueError(f"Generated Excel file is corrupted: {local_filename}")
+        if not validate_excel_file(original_filename, logger_instance):
+            logger_instance.error(f"Excel file failed validation after save: {original_filename}")
+            raise ValueError(f"Generated Excel file is corrupted: {original_filename}")
     except Exception as e:
         logger_instance.error(f"Error writing to MSRP Excel file: {e}", exc_info=True)
         raise
@@ -1199,15 +1212,11 @@ def write_excel_generic(local_filename: str, temp_dir: str, image_data: List[Dic
     try:
         # Clean the file to remove external links
         logger_instance.info("Cleaning file to remove external links...")
-        local_filename = clean_template_file(local_filename, logger_instance)
+        original_filename = local_filename
+        cleaned_filename = clean_template_file(local_filename, logger_instance)
 
-        # Try to load the workbook with fallback options
-        try:
-            wb = load_workbook(local_filename)
-        except AttributeError as attr_error:
-            logger_instance.warning(f"AttributeError loading workbook: {attr_error}. Trying with data_only=True...")
-            wb = load_workbook(local_filename, data_only=True)
-
+        # Load the workbook
+        wb = load_workbook(cleaned_filename)
         ws = wb.active
 
         # Clear existing images for FileTypeID 10
@@ -1357,18 +1366,26 @@ def write_excel_generic(local_filename: str, temp_dir: str, image_data: List[Dic
         logger_instance.info("Setting worksheet view to A1")
         ws.sheet_view.topLeftCell = 'A1'
 
-        # Save and close workbook properly to prevent corruption
+        # Save to ORIGINAL filename (not the cleaned one) so upload works correctly
         try:
-            wb.save(local_filename)
-            logger_instance.info(f"Generic Excel file saved: {local_filename}, size: {os.path.getsize(local_filename)} bytes")
+            wb.save(original_filename)
+            logger_instance.info(f"Generic Excel file saved: {original_filename}, size: {os.path.getsize(original_filename)} bytes")
         finally:
             wb.close()
-            logger_instance.info(f"Excel workbook closed: {local_filename}")
+            logger_instance.info(f"Excel workbook closed: {original_filename}")
+
+        # Clean up the temporary cleaned file
+        if cleaned_filename != original_filename and os.path.exists(cleaned_filename):
+            try:
+                os.remove(cleaned_filename)
+                logger_instance.info(f"Removed temporary cleaned file: {cleaned_filename}")
+            except:
+                pass
 
         # Validate the saved file
-        if not validate_excel_file(local_filename, logger_instance):
-            logger_instance.error(f"Excel file failed validation after save: {local_filename}")
-            raise ValueError(f"Generated Excel file is corrupted: {local_filename}")
+        if not validate_excel_file(original_filename, logger_instance):
+            logger_instance.error(f"Excel file failed validation after save: {original_filename}")
+            raise ValueError(f"Generated Excel file is corrupted: {original_filename}")
     except Exception as e:
         logger_instance.error(f"Error writing to generic Excel file: {e}", exc_info=True)
         raise
