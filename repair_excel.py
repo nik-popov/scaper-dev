@@ -8,6 +8,63 @@ import zipfile
 import os
 import shutil
 from pathlib import Path
+import xml.etree.ElementTree as ET
+
+
+def replace_external_formulas_with_text(sheet_file):
+    """
+    Replace cells containing external formulas with the text '#REF'.
+
+    Args:
+        sheet_file: Path to the worksheet XML file
+    """
+    try:
+        # Parse the XML with namespace handling
+        ET.register_namespace('', 'http://schemas.openxmlformats.org/spreadsheetml/2006/main')
+        ET.register_namespace('r', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships')
+
+        tree = ET.parse(sheet_file)
+        root = tree.getroot()
+
+        # Define namespace
+        ns = {'ss': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
+
+        modified = False
+
+        # Find all cell elements
+        for cell in root.findall('.//ss:c', ns):
+            # Check if cell has a formula
+            formula = cell.find('ss:f', ns)
+
+            if formula is not None:
+                formula_text = formula.text or ''
+
+                # Check if formula references external workbook (contains '[' and ']')
+                if '[' in formula_text and ']' in formula_text:
+                    # Remove the formula element
+                    cell.remove(formula)
+
+                    # Set cell type to inline string (str)
+                    cell.set('t', 'inlineStr')
+
+                    # Remove any existing value element
+                    for v in cell.findall('ss:v', ns):
+                        cell.remove(v)
+
+                    # Add inline string value
+                    is_elem = ET.SubElement(cell, '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}is')
+                    t_elem = ET.SubElement(is_elem, '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}t')
+                    t_elem.text = '#REF'
+
+                    modified = True
+
+        if modified:
+            # Write back to file
+            tree.write(sheet_file, encoding='utf-8', xml_declaration=True)
+            print(f"  ✓ Updated {sheet_file.name}")
+
+    except Exception as e:
+        print(f"  ⚠ Warning: Could not process {sheet_file.name}: {e}")
 
 
 def repair_excel_file(input_file, output_file=None):
@@ -72,6 +129,13 @@ def repair_excel_file(input_file, output_file=None):
 
             with open(content_types_file, 'w', encoding='utf-8') as f:
                 f.write(content)
+
+        # Replace external formulas with #REF text in all worksheets
+        worksheets_dir = temp_dir / "xl" / "worksheets"
+        if worksheets_dir.exists():
+            print(f"Replacing external formulas with #REF text in worksheets...")
+            for sheet_file in worksheets_dir.glob("*.xml"):
+                replace_external_formulas_with_text(sheet_file)
 
         # Create the repaired Excel file
         print(f"Creating repaired file {output_file}...")
