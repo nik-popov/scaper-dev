@@ -305,6 +305,11 @@ def get_last_non_empty_row(ws, column: str, header_row: int, logger_instance: lo
 def verify_and_process_image(image_path: str, logger_instance: logging.Logger) -> bool:
     """Verify, crop, and process image in memory to avoid corruption."""
     try:
+        # Check if file exists first
+        if not os.path.exists(image_path):
+            logger_instance.warning(f"Image file does not exist: {image_path}")
+            return False
+
         # Verify image integrity
         with PILImage.open(image_path) as temp_img:
             temp_img.verify()
