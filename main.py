@@ -310,6 +310,8 @@ def get_last_non_empty_row(ws, column: str, header_row: int, logger_instance: lo
 def verify_and_process_image(image_path: str, logger_instance: logging.Logger) -> bool:
     """Verify, crop, and process image in memory to avoid corruption."""
     img = None
+    backup_path = None
+
     try:
         # Check if file exists first
         if not os.path.exists(image_path):
@@ -319,58 +321,156 @@ def verify_and_process_image(image_path: str, logger_instance: logging.Logger) -
         # Verify image integrity
         with PILImage.open(image_path) as temp_img:
             temp_img.verify()
-        if os.path.getsize(image_path) < MIN_IMAGE_SIZE:
+
+        original_size = os.path.getsize(image_path)
+        if original_size < MIN_IMAGE_SIZE:
             logger_instance.warning(f"File too small: {image_path}")
             return False
+
+        # Create backup of original image before processing
+        backup_path = f"{image_path}.backup"
+        shutil.copy2(image_path, backup_path)
 
         # Load image for processing
         img = PILImage.open(image_path)
         img.load()
 
-        # Process image (cropping and border removal)
-        img = process_image_remove_lines(image_path, img, logger_instance)
+        # Convert to RGB if necessary to ensure compatibility
+        if img.mode not in ('RGB', 'RGBA'):
+            logger_instance.info(f"Converting image mode from {img.mode} to RGB: {image_path}")
+            img = img.convert('RGB')
+
+        # Process image (cropping and border removal) with error handling
+        try:
+            img = process_image_remove_lines(image_path, img, logger_instance)
+        except Exception as process_error:
+            logger_instance.warning(f"Image processing failed, using simple resize instead: {process_error}")
+            # Fallback: just reload the original image
+            img.close()
+            img = PILImage.open(backup_path)
+            img.load()
+            if img.mode == 'RGBA':
+                background = PILImage.new('RGB', img.size, (255, 255, 255))
+                background.paste(img, mask=img.split()[3])
+                img = background
+            elif img.mode != 'RGB':
+                img = img.convert('RGB')
 
         # Resize to fit max dimension (upscale or downscale)
         w, h = img.size
+
+        # Ensure dimensions are valid
+        if w <= 0 or h <= 0:
+            logger_instance.error(f"Invalid image dimensions: {w}x{h} for {image_path}")
+            return False
+
         ratio = min(MAX_IMAGE_DIMENSION / w, MAX_IMAGE_DIMENSION / h)
-        new_w = int(w * ratio)
-        new_h = int(h * ratio)
+        new_w = max(1, int(w * ratio))
+        new_h = max(1, int(h * ratio))
 
         if (new_w, new_h) != (w, h):
             img = img.resize((new_w, new_h), PILImage.Resampling.LANCZOS)
             logger_instance.info(f"Resized image {image_path} from {w}x{h} to {new_w}x{new_h} (max dim {MAX_IMAGE_DIMENSION})")
 
-        # Save processed image once
-        img.save(image_path, 'PNG', compress_level=6, quality=95)
+        # Ensure RGB mode before saving
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+
+        # Save processed image with error handling
+        try:
+            img.save(image_path, 'PNG', compress_level=6, optimize=True)
+        except Exception as save_error:
+            logger_instance.error(f"Failed to save processed image: {save_error}. Trying with lower compression.")
+            # Fallback: save with minimal compression
+            img.save(image_path, 'PNG', compress_level=1)
 
         # Verify the saved image is valid
         if not os.path.exists(image_path):
             logger_instance.error(f"Image file disappeared after saving: {image_path}")
+            # Restore from backup
+            if backup_path and os.path.exists(backup_path):
+                shutil.copy2(backup_path, image_path)
+                logger_instance.info(f"Restored image from backup: {image_path}")
             return False
 
         file_size = os.path.getsize(image_path)
         if file_size < MIN_IMAGE_SIZE:
             logger_instance.error(f"Saved image file too small ({file_size} bytes): {image_path}")
+            # Restore from backup
+            if backup_path and os.path.exists(backup_path):
+                shutil.copy2(backup_path, image_path)
+                logger_instance.info(f"Restored image from backup due to small size: {image_path}")
             return False
 
         # Try to re-open the saved image to ensure it's valid
         try:
             with PILImage.open(image_path) as verify_img:
                 verify_img.verify()
+            # Load it again to ensure it can be fully read
+            with PILImage.open(image_path) as verify_img2:
+                verify_img2.load()
         except Exception as verify_error:
             logger_instance.error(f"Saved image failed verification: {image_path}, error: {verify_error}")
-            return False
+            # Restore from backup and try simple processing
+            if backup_path and os.path.exists(backup_path):
+                logger_instance.info(f"Attempting simple processing fallback for: {image_path}")
+                try:
+                    with PILImage.open(backup_path) as fallback_img:
+                        fallback_img.load()
+                        if fallback_img.mode == 'RGBA':
+                            background = PILImage.new('RGB', fallback_img.size, (255, 255, 255))
+                            background.paste(fallback_img, mask=fallback_img.split()[3])
+                            fallback_img = background
+                        elif fallback_img.mode != 'RGB':
+                            fallback_img = fallback_img.convert('RGB')
+
+                        # Just resize, no other processing
+                        w, h = fallback_img.size
+                        ratio = min(MAX_IMAGE_DIMENSION / w, MAX_IMAGE_DIMENSION / h)
+                        new_w = max(1, int(w * ratio))
+                        new_h = max(1, int(h * ratio))
+                        if (new_w, new_h) != (w, h):
+                            fallback_img = fallback_img.resize((new_w, new_h), PILImage.Resampling.LANCZOS)
+
+                        fallback_img.save(image_path, 'PNG', compress_level=1)
+                        logger_instance.info(f"Successfully saved with fallback processing: {image_path}")
+                except Exception as fallback_error:
+                    logger_instance.error(f"Fallback processing also failed: {fallback_error}")
+                    return False
+            else:
+                return False
+
+        # Clean up backup if successful
+        if backup_path and os.path.exists(backup_path):
+            try:
+                os.remove(backup_path)
+            except:
+                pass
 
         logger_instance.info(f"Image verified and processed: {image_path}")
         return True
+
     except Exception as e:
         logger_instance.error(f"Image verification failed for {image_path}: {e}", exc_info=True)
+        # Try to restore from backup
+        if backup_path and os.path.exists(backup_path):
+            try:
+                shutil.copy2(backup_path, image_path)
+                logger_instance.info(f"Restored original image from backup after error: {image_path}")
+            except:
+                pass
         return False
     finally:
         # Ensure image is closed to prevent file handle leaks
         if img is not None:
             try:
                 img.close()
+            except:
+                pass
+        # Clean up backup file
+        if backup_path and os.path.exists(backup_path):
+            try:
+                os.remove(backup_path)
             except:
                 pass
 
@@ -483,9 +583,35 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
             logger_instance.warning(f"Negative row_offset {row_offset} provided. Ensure this is intentional.")
 
         wb = load_workbook(local_filename)
-        # Remove external links to prevent corruption warnings
-        if hasattr(wb, 'external_links'):
-            wb.external_links = []
+
+        # Remove external links more thoroughly to prevent corruption
+        try:
+            # Method 1: Clear the external_links list
+            if hasattr(wb, 'external_links'):
+                wb.external_links.clear()
+                logger_instance.info("Cleared external_links list")
+
+            # Method 2: Remove defined names that reference external workbooks
+            if hasattr(wb, 'defined_names'):
+                names_to_remove = []
+                for name in wb.defined_names.definedName:
+                    if name.value and '[' in str(name.value):  # External reference contains '['
+                        names_to_remove.append(name.name)
+                for name in names_to_remove:
+                    try:
+                        del wb.defined_names[name]
+                        logger_instance.info(f"Removed external defined name: {name}")
+                    except:
+                        pass
+
+            # Method 3: Clear _external_links from the workbook archive
+            if hasattr(wb, '_archive') and hasattr(wb._archive, 'namelist'):
+                external_files = [f for f in wb._archive.namelist() if 'externalLink' in f]
+                if external_files:
+                    logger_instance.warning(f"Found external link files in archive: {external_files}")
+        except Exception as link_error:
+            logger_instance.warning(f"Error removing external links: {link_error}")
+
         ws = wb.active
         image_map = {}
         for path_obj in Path(temp_dir).iterdir():
@@ -578,14 +704,29 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
 
                                 width_emu = pixels_to_EMU(img_width_pixels)
                                 height_emu = pixels_to_EMU(img_height_pixels)
-                                marker = AnchorMarker(
-                                    col=0,
-                                    colOff=pixels_to_EMU(x_offset_pixels),
-                                    row=max(0, row_num - 1),
-                                    rowOff=pixels_to_EMU(y_offset_pixels)
-                                )
-                                img.anchor = OneCellAnchor(_from=marker, ext=XDRPositiveSize2D(width_emu, height_emu))
-                                ws.add_image(img)
+
+                                # Validate EMU values to prevent XML corruption
+                                if width_emu <= 0 or height_emu <= 0:
+                                    logger_instance.warning(f"Invalid EMU dimensions for Row {row_id}: {width_emu}x{height_emu}, skipping")
+                                elif width_emu > 10000000 or height_emu > 10000000:  # Max ~1050 pixels
+                                    logger_instance.warning(f"EMU dimensions too large for Row {row_id}: {width_emu}x{height_emu}, skipping")
+                                else:
+                                    anchor_row = max(0, row_num - 1)
+                                    x_offset_emu = pixels_to_EMU(x_offset_pixels)
+                                    y_offset_emu = pixels_to_EMU(y_offset_pixels)
+
+                                    # Ensure offsets are non-negative
+                                    x_offset_emu = max(0, x_offset_emu)
+                                    y_offset_emu = max(0, y_offset_emu)
+
+                                    marker = AnchorMarker(
+                                        col=0,
+                                        colOff=x_offset_emu,
+                                        row=anchor_row,
+                                        rowOff=y_offset_emu
+                                    )
+                                    img.anchor = OneCellAnchor(_from=marker, ext=XDRPositiveSize2D(width_emu, height_emu))
+                                    ws.add_image(img)
                                 logger_instance.info(
                                     f"Added image for Row {row_id} at Excel row {row_num}, "
                                     f"height={CELL_HEIGHT_POINTS} points, width={ws.column_dimensions['A'].width:.2f} points"
@@ -628,14 +769,48 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
         # Save and close workbook properly to prevent corruption
         try:
             wb.save(local_filename)
-            logger_instance.info(f"Excel file saved: {local_filename}")
+            logger_instance.info(f"Excel file saved: {local_filename}, size: {os.path.getsize(local_filename)} bytes")
         finally:
             wb.close()
             logger_instance.info(f"Excel workbook closed: {local_filename}")
+
+        # Validate the saved file
+        if not validate_excel_file(local_filename, logger_instance):
+            logger_instance.error(f"Excel file failed validation after save: {local_filename}")
+            raise ValueError(f"Generated Excel file is corrupted: {local_filename}")
     except Exception as e:
         logger_instance.error(f"Error writing to DISTRO Excel file: {e}", exc_info=True)
         raise
 
+
+def validate_excel_file(excel_file: str, logger_instance: logging.Logger) -> bool:
+    """Validate that the Excel file can be opened without corruption."""
+    wb = None
+    try:
+        # Try to open the file
+        wb = load_workbook(excel_file, data_only=False)
+        ws = wb.active
+
+        # Try to access some basic properties
+        _ = ws.max_row
+        _ = ws.max_column
+
+        # Check if there are any images
+        if hasattr(ws, '_images'):
+            image_count = len(ws._images)
+            logger_instance.info(f"Excel file contains {image_count} images")
+
+        logger_instance.info(f"Excel file validation passed: {excel_file}")
+        return True
+    except Exception as e:
+        logger_instance.error(f"Excel file validation FAILED: {excel_file}, error: {e}", exc_info=True)
+        return False
+    finally:
+        if wb is not None:
+            try:
+                wb.close()
+            except:
+                pass
 
 def find_header_row_index(excel_file: str, logger_instance: logging.Logger) -> Optional[int]:
     wb = None
@@ -667,9 +842,21 @@ def find_header_row_index(excel_file: str, logger_instance: logging.Logger) -> O
 def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, target_column: str, row_offset: int, logger_instance: logging.Logger, populate_images: bool = True, populate_msrp: bool = True):
     try:
         wb = load_workbook(local_filename)
-        # Remove external links to prevent corruption warnings
-        if hasattr(wb, 'external_links'):
-            wb.external_links = []
+
+        # Remove external links more thoroughly to prevent corruption
+        try:
+            if hasattr(wb, 'external_links'):
+                wb.external_links.clear()
+            if hasattr(wb, 'defined_names'):
+                names_to_remove = [name.name for name in wb.defined_names.definedName if name.value and '[' in str(name.value)]
+                for name in names_to_remove:
+                    try:
+                        del wb.defined_names[name]
+                    except:
+                        pass
+        except Exception as link_error:
+            logger_instance.warning(f"Error removing external links: {link_error}")
+
         ws = wb.active
         image_map = {int(Path(f).stem): f for f in os.listdir(temp_dir) if Path(f).stem.isdigit()}
         if populate_msrp and not re.match(r'^[A-Z]+$', target_column):
@@ -765,14 +952,24 @@ def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict],
                                         width_emu = pixels_to_EMU(img_width_pixels)
                                         height_emu = pixels_to_EMU(img_height_pixels)
 
-                                        marker = AnchorMarker(
-                                            col=0, # Column A
-                                            colOff=pixels_to_EMU(x_offset_pixels),
-                                            row=row_num - 1,
-                                            rowOff=pixels_to_EMU(y_offset_pixels)
-                                        )
-                                        img.anchor = OneCellAnchor(_from=marker, ext=XDRPositiveSize2D(width_emu, height_emu))
-                                        ws.add_image(img)
+                                        # Validate EMU values to prevent XML corruption
+                                        if width_emu <= 0 or height_emu <= 0:
+                                            logger_instance.warning(f"Invalid EMU dimensions for Row {row_id}: {width_emu}x{height_emu}, skipping")
+                                        elif width_emu > 10000000 or height_emu > 10000000:
+                                            logger_instance.warning(f"EMU dimensions too large for Row {row_id}: {width_emu}x{height_emu}, skipping")
+                                        else:
+                                            anchor_row = max(0, row_num - 1)
+                                            x_offset_emu = max(0, pixels_to_EMU(x_offset_pixels))
+                                            y_offset_emu = max(0, pixels_to_EMU(y_offset_pixels))
+
+                                            marker = AnchorMarker(
+                                                col=0, # Column A
+                                                colOff=x_offset_emu,
+                                                row=anchor_row,
+                                                rowOff=y_offset_emu
+                                            )
+                                            img.anchor = OneCellAnchor(_from=marker, ext=XDRPositiveSize2D(width_emu, height_emu))
+                                            ws.add_image(img)
 
                                         logger_instance.info(f"Added image for Row {row_id} at Excel row {row_num}, height set to {ws.row_dimensions[row_num].height} points")
                             except Exception as img_error:
@@ -802,10 +999,15 @@ def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict],
         # Save and close workbook properly to prevent corruption
         try:
             wb.save(local_filename)
-            logger_instance.info(f"MSRP Excel file saved: {local_filename}")
+            logger_instance.info(f"MSRP Excel file saved: {local_filename}, size: {os.path.getsize(local_filename)} bytes")
         finally:
             wb.close()
             logger_instance.info(f"Excel workbook closed: {local_filename}")
+
+        # Validate the saved file
+        if not validate_excel_file(local_filename, logger_instance):
+            logger_instance.error(f"Excel file failed validation after save: {local_filename}")
+            raise ValueError(f"Generated Excel file is corrupted: {local_filename}")
     except Exception as e:
         logger_instance.error(f"Error writing to MSRP Excel file: {e}", exc_info=True)
         raise
@@ -813,9 +1015,21 @@ def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict],
 def write_excel_generic(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, row_offset: int, logger_instance: logging.Logger, file_type_id: Optional[int] = None):
     try:
         wb = load_workbook(local_filename)
-        # Remove external links to prevent corruption warnings
-        if hasattr(wb, 'external_links'):
-            wb.external_links = []
+
+        # Remove external links more thoroughly to prevent corruption
+        try:
+            if hasattr(wb, 'external_links'):
+                wb.external_links.clear()
+            if hasattr(wb, 'defined_names'):
+                names_to_remove = [name.name for name in wb.defined_names.definedName if name.value and '[' in str(name.value)]
+                for name in names_to_remove:
+                    try:
+                        del wb.defined_names[name]
+                    except:
+                        pass
+        except Exception as link_error:
+            logger_instance.warning(f"Error removing external links: {link_error}")
+
         ws = wb.active
 
         # Clear existing images for FileTypeID 10
@@ -934,14 +1148,24 @@ def write_excel_generic(local_filename: str, temp_dir: str, image_data: List[Dic
                             width_emu = pixels_to_EMU(img_width_pixels)
                             height_emu = pixels_to_EMU(img_height_pixels)
 
-                            marker = AnchorMarker(
-                                col=0, # Column A
-                                colOff=pixels_to_EMU(x_offset_pixels),
-                                row=row_num - 1,
-                                rowOff=pixels_to_EMU(y_offset_pixels)
-                            )
-                            img.anchor = OneCellAnchor(_from=marker, ext=XDRPositiveSize2D(width_emu, height_emu))
-                            ws.add_image(img)
+                            # Validate EMU values to prevent XML corruption
+                            if width_emu <= 0 or height_emu <= 0:
+                                logger_instance.warning(f"Invalid EMU dimensions for ExcelRowID {row_id}: {width_emu}x{height_emu}, skipping")
+                            elif width_emu > 10000000 or height_emu > 10000000:
+                                logger_instance.warning(f"EMU dimensions too large for ExcelRowID {row_id}: {width_emu}x{height_emu}, skipping")
+                            else:
+                                anchor_row = max(0, row_num - 1)
+                                x_offset_emu = max(0, pixels_to_EMU(x_offset_pixels))
+                                y_offset_emu = max(0, pixels_to_EMU(y_offset_pixels))
+
+                                marker = AnchorMarker(
+                                    col=0, # Column A
+                                    colOff=x_offset_emu,
+                                    row=anchor_row,
+                                    rowOff=y_offset_emu
+                                )
+                                img.anchor = OneCellAnchor(_from=marker, ext=XDRPositiveSize2D(width_emu, height_emu))
+                                ws.add_image(img)
 
                             logger_instance.info(
                                 f"Added image for ExcelRowID {row_id} at Excel row {row_num} (absolute_mapping={use_absolute_row_ids})"
@@ -958,10 +1182,15 @@ def write_excel_generic(local_filename: str, temp_dir: str, image_data: List[Dic
         # Save and close workbook properly to prevent corruption
         try:
             wb.save(local_filename)
-            logger_instance.info(f"Generic Excel file saved: {local_filename}")
+            logger_instance.info(f"Generic Excel file saved: {local_filename}, size: {os.path.getsize(local_filename)} bytes")
         finally:
             wb.close()
             logger_instance.info(f"Excel workbook closed: {local_filename}")
+
+        # Validate the saved file
+        if not validate_excel_file(local_filename, logger_instance):
+            logger_instance.error(f"Excel file failed validation after save: {local_filename}")
+            raise ValueError(f"Generated Excel file is corrupted: {local_filename}")
     except Exception as e:
         logger_instance.error(f"Error writing to generic Excel file: {e}", exc_info=True)
         raise
