@@ -753,6 +753,21 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                         logger_instance.error(error_msg)
                         raise ValueError(error_msg)
 
+                    # CRITICAL: Validate PIL can read the image and get dimensions BEFORE creating openpyxl Image
+                    try:
+                        pil_img = PILImage.open(image_path)
+                        pil_width, pil_height = pil_img.size
+                        pil_img.close()
+                        if pil_width <= 0 or pil_height <= 0:
+                            error_msg = f"DEBUG: PIL image has invalid dimensions for Row {row_id}: {pil_width}x{pil_height}"
+                            logger_instance.error(error_msg)
+                            raise ValueError(error_msg)
+                        logger_instance.info(f"DEBUG: PIL validated image dimensions for Row {row_id}: {pil_width}x{pil_height}")
+                    except Exception as pil_error:
+                        error_msg = f"DEBUG: PIL failed to read image for Row {row_id}: {pil_error}"
+                        logger_instance.error(error_msg)
+                        raise ValueError(error_msg) from pil_error
+
                     # Try to create openpyxl Image object with error handling
                     logger_instance.info(f"DEBUG: Creating openpyxl Image object for Row {row_id}")
                     img = Image(image_path)
@@ -813,6 +828,15 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                         rowOff=y_offset_emu
                     )
                     img.anchor = OneCellAnchor(_from=marker, ext=XDRPositiveSize2D(width_emu, height_emu))
+
+                    # CRITICAL: Final validation before adding to worksheet
+                    # Ensure Image object still has valid dimensions after anchor is set
+                    final_width = getattr(img, 'width', 0)
+                    final_height = getattr(img, 'height', 0)
+                    if final_width <= 0 or final_height <= 0:
+                        error_msg = f"CRITICAL: Image dimensions became 0 after anchor was set for Row {row_id}: {final_width}x{final_height}"
+                        logger_instance.error(error_msg)
+                        raise ValueError(error_msg)
 
                     image_count_before = len(ws._images) if hasattr(ws, '_images') else 0
                     logger_instance.info(f"Adding image to worksheet (current count: {image_count_before})")
@@ -1231,6 +1255,18 @@ def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict],
                                 if not os.path.exists(image_path) or os.path.getsize(image_path) < MIN_IMAGE_SIZE:
                                     logger_instance.warning(f"Image file invalid after processing for Row {row_id}, skipping")
                                 else:
+                                    # CRITICAL: Validate PIL can read the image BEFORE creating openpyxl Image
+                                    try:
+                                        pil_img = PILImage.open(image_path)
+                                        pil_width, pil_height = pil_img.size
+                                        pil_img.close()
+                                        if pil_width <= 0 or pil_height <= 0:
+                                            logger_instance.warning(f"PIL image has invalid dimensions for Row {row_id}: {pil_width}x{pil_height}, skipping")
+                                            continue
+                                    except Exception as pil_error:
+                                        logger_instance.warning(f"PIL failed to read image for Row {row_id}: {pil_error}, skipping")
+                                        continue
+
                                     img = Image(image_path)
 
                                     img_height_pixels = img.height if hasattr(img, 'height') else 0
@@ -1277,7 +1313,15 @@ def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict],
                                                 rowOff=y_offset_emu
                                             )
                                             img.anchor = OneCellAnchor(_from=marker, ext=XDRPositiveSize2D(width_emu, height_emu))
-                                            ws.add_image(img)
+
+                                            # CRITICAL: Final validation before adding to worksheet
+                                            final_width = getattr(img, 'width', 0)
+                                            final_height = getattr(img, 'height', 0)
+                                            if final_width <= 0 or final_height <= 0:
+                                                logger_instance.error(f"CRITICAL: Image dimensions became 0 after anchor was set for Row {row_id}: {final_width}x{final_height}")
+                                                logger_instance.warning(f"Skipping image insertion for Row {row_id}")
+                                            else:
+                                                ws.add_image(img)
 
                                         logger_instance.info(f"Added image for Row {row_id} at Excel row {row_num}, height set to {ws.row_dimensions[row_num].height} points")
                             except Exception as img_error:
@@ -1429,6 +1473,18 @@ def write_excel_generic(local_filename: str, temp_dir: str, image_data: List[Dic
                     if not os.path.exists(image_path) or os.path.getsize(image_path) < MIN_IMAGE_SIZE:
                         logger_instance.warning(f"Image file invalid after processing for ExcelRowID {row_id}, skipping")
                     else:
+                        # CRITICAL: Validate PIL can read the image BEFORE creating openpyxl Image
+                        try:
+                            pil_img = PILImage.open(image_path)
+                            pil_width, pil_height = pil_img.size
+                            pil_img.close()
+                            if pil_width <= 0 or pil_height <= 0:
+                                logger_instance.warning(f"PIL image has invalid dimensions for ExcelRowID {row_id}: {pil_width}x{pil_height}, skipping")
+                                continue
+                        except Exception as pil_error:
+                            logger_instance.warning(f"PIL failed to read image for ExcelRowID {row_id}: {pil_error}, skipping")
+                            continue
+
                         img = Image(image_path)
 
                         img_height_pixels = getattr(img, 'height', 0)
@@ -1475,7 +1531,15 @@ def write_excel_generic(local_filename: str, temp_dir: str, image_data: List[Dic
                                     rowOff=y_offset_emu
                                 )
                                 img.anchor = OneCellAnchor(_from=marker, ext=XDRPositiveSize2D(width_emu, height_emu))
-                                ws.add_image(img)
+
+                                # CRITICAL: Final validation before adding to worksheet
+                                final_width = getattr(img, 'width', 0)
+                                final_height = getattr(img, 'height', 0)
+                                if final_width <= 0 or final_height <= 0:
+                                    logger_instance.error(f"CRITICAL: Image dimensions became 0 after anchor was set for ExcelRowID {row_id}: {final_width}x{final_height}")
+                                    logger_instance.warning(f"Skipping image insertion for ExcelRowID {row_id}")
+                                else:
+                                    ws.add_image(img)
 
                             logger_instance.info(
                                 f"Added image for ExcelRowID {row_id} at Excel row {row_num} (absolute_mapping={use_absolute_row_ids})"

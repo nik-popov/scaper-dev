@@ -1,0 +1,24 @@
+Your code changes need to be deployed! Here are your options:
+
+OPTION 1: Restart the uvicorn server
+========================================
+# Find and kill the current server
+pkill -f "uvicorn main:app" 
+
+# Restart in the correct directory
+python main.py &
+
+OPTION 2: If running in Docker/Container
+=========================================
+docker-compose restart   # or
+docker restart <container-name>
+
+OPTION 3: If using systemd
+===========================
+sudo systemctl restart your-service-name
+
+After restarting, test again:
+curl -X POST 'http://localhost:8080/generate-download-file/?file_id=1083&row_offset=0'
+
+Then monitor logs:
+watch -n 1 'ls -ltr jobs/1083/*/logs/*.log 2>/dev/null | tail -1'
