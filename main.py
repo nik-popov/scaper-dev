@@ -273,6 +273,11 @@ async def download_all_images(data: List[Dict], save_path: str, logger_instance:
 # --- Image & Excel Processing Functions ---
 def resize_image(image_path: str, logger_instance: logging.Logger) -> bool:
     try:
+        # Check if file exists first
+        if not os.path.exists(image_path):
+            logger_instance.warning(f"Image file does not exist: {image_path}")
+            return False
+
         with PILImage.open(image_path) as img:
             img.load()  # Ensure image is fully loaded
 
