@@ -210,7 +210,7 @@ async def image_download(semaphore, item: Dict, save_path: str, session, logger_
         loop = asyncio.get_running_loop()
 
         for i, (url, thumb_url, sort_order) in enumerate(item['image_options']):
-            
+
             async def attempt_download(download_url: str, is_thumb: bool) -> bool:
                 if not download_url: return False
                 try:
@@ -218,24 +218,72 @@ async def image_download(semaphore, item: Dict, save_path: str, session, logger_
                     async with session.get(download_url, headers=headers) as response:
                         is_valid, data = await validate_image_response(response, download_url, logger_instance)
                         if not is_valid: return False
-                        
+
                         final_path = os.path.join(save_path, f"{image_name}.png")
 
-                        def save_image_sync():
-                            with PILImage.open(BytesIO(data)) as img:
-                                # Ensure proper mode conversion during save
-                                if img.mode == 'RGBA':
-                                    background = PILImage.new('RGB', img.size, (255, 255, 255))
-                                    background.paste(img, mask=img.split()[3])
-                                    img = background
-                                elif img.mode != 'RGB':
-                                    img = img.convert('RGB')
-                                img.save(final_path, 'PNG', compress_level=6)
-                        
-                        await loop.run_in_executor(None, save_image_sync)
-                                
-                        logger_instance.info(f"SUCCESS (SortOrder {sort_order}) for Row {row_id} from {'thumbnail' if is_thumb else 'main'} URL.")
-                        return True
+                        def save_and_verify_image_sync():
+                            try:
+                                # Save the image
+                                with PILImage.open(BytesIO(data)) as img:
+                                    # Ensure proper mode conversion during save
+                                    if img.mode == 'RGBA':
+                                        background = PILImage.new('RGB', img.size, (255, 255, 255))
+                                        background.paste(img, mask=img.split()[3])
+                                        img = background
+                                    elif img.mode != 'RGB':
+                                        img = img.convert('RGB')
+                                    img.save(final_path, 'PNG', compress_level=6)
+
+                                # Immediately verify the saved image
+                                if not os.path.exists(final_path):
+                                    logger_instance.warning(f"Image file not created: {final_path}")
+                                    return False
+
+                                file_size = os.path.getsize(final_path)
+                                if file_size < MIN_IMAGE_SIZE:
+                                    logger_instance.warning(f"Saved image too small ({file_size} bytes): {final_path}")
+                                    try:
+                                        os.remove(final_path)
+                                    except:
+                                        pass
+                                    return False
+
+                                # Try to open and verify the image
+                                with PILImage.open(final_path) as verify_img:
+                                    verify_img.verify()
+
+                                # Load it again to ensure it's readable
+                                with PILImage.open(final_path) as verify_img2:
+                                    verify_img2.load()
+                                    width, height = verify_img2.size
+                                    if width <= 0 or height <= 0:
+                                        logger_instance.warning(f"Invalid image dimensions {width}x{height}: {final_path}")
+                                        try:
+                                            os.remove(final_path)
+                                        except:
+                                            pass
+                                        return False
+
+                                return True
+                            except Exception as verify_error:
+                                logger_instance.warning(f"Image verification failed: {verify_error}")
+                                # Clean up corrupt file
+                                if os.path.exists(final_path):
+                                    try:
+                                        os.remove(final_path)
+                                    except:
+                                        pass
+                                return False
+
+                        is_verified = await loop.run_in_executor(None, save_and_verify_image_sync)
+
+                        if is_verified:
+                            logger_instance.info(f"SUCCESS (SortOrder {sort_order}) for Row {row_id} from {'thumbnail' if is_thumb else 'main'} URL.")
+                            return True
+                        else:
+                            logger_instance.warning(f"Image corrupt/invalid for Row {row_id} from {'thumbnail' if is_thumb else 'main'} URL, trying next option...")
+                            return False
+
                 except Exception as e:
                     logger_instance.warning(f"Download attempt {i+1} failed for Row {row_id} ({'thumb' if is_thumb else 'main'}): {e}")
                     return False
@@ -244,7 +292,7 @@ async def image_download(semaphore, item: Dict, save_path: str, session, logger_
                 return True
             if await attempt_download(thumb_url, is_thumb=True):
                 return True
-        
+
         logger_instance.error(f"All download attempts FAILED for Row {row_id}. No more images to try.")
         return False
 
