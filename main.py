@@ -379,10 +379,16 @@ def verify_and_process_image(image_path: str, logger_instance: logging.Logger) -
         # Save processed image with error handling
         try:
             img.save(image_path, 'PNG', compress_level=6, optimize=True)
+            logger_instance.info(f"Saved image with compression_level=6, optimize=True")
         except Exception as save_error:
             logger_instance.error(f"Failed to save processed image: {save_error}. Trying with lower compression.")
             # Fallback: save with minimal compression
-            img.save(image_path, 'PNG', compress_level=1)
+            try:
+                img.save(image_path, 'PNG', compress_level=1)
+                logger_instance.info(f"Saved image with compression_level=1 (fallback)")
+            except Exception as fallback_save_error:
+                logger_instance.error(f"Fallback save also failed: {fallback_save_error}")
+                return False
 
         # Verify the saved image is valid
         if not os.path.exists(image_path):
@@ -575,6 +581,19 @@ def get_valid_indices_with_padding(valid_indices, max_index, pad=5):
 
 def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, logger_instance: logging.Logger, row_offset: int = 0):
     try:
+        logger_instance.info(f"=== Starting write_excel_distro ===")
+        logger_instance.info(f"Template file: {local_filename}, size: {os.path.getsize(local_filename)} bytes")
+
+        # Clean the template file to remove external links
+        logger_instance.info("Cleaning template file to remove external links...")
+        local_filename = clean_template_file(local_filename, logger_instance)
+        logger_instance.info(f"Using cleaned template: {local_filename}")
+
+        # Validate template file BEFORE loading
+        logger_instance.info("Validating template file before processing...")
+        if not validate_excel_file(local_filename, logger_instance):
+            logger_instance.warning("Template file has validation warnings, but proceeding...")
+
         header_row = int(header_row)
         if header_row < 0:
             logger_instance.error(f"Invalid header_row {header_row}. Setting to 0.")
@@ -582,14 +601,24 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
         if row_offset < 0:
             logger_instance.warning(f"Negative row_offset {row_offset} provided. Ensure this is intentional.")
 
+        logger_instance.info(f"Loading workbook from: {local_filename}")
         wb = load_workbook(local_filename)
+        logger_instance.info(f"Workbook loaded successfully")
+
+        # Diagnose external links BEFORE removing
+        logger_instance.info("=== Diagnosing external links ===")
+        if hasattr(wb, 'external_links'):
+            logger_instance.info(f"external_links attribute exists, value: {wb.external_links}")
+        else:
+            logger_instance.info("No external_links attribute found")
 
         # Remove external links more thoroughly to prevent corruption
         try:
             # Method 1: Clear the external_links list
             if hasattr(wb, 'external_links'):
+                original_count = len(wb.external_links) if wb.external_links else 0
                 wb.external_links.clear()
-                logger_instance.info("Cleared external_links list")
+                logger_instance.info(f"Cleared {original_count} external_links")
 
             # Method 2: Remove defined names that reference external workbooks
             if hasattr(wb, 'defined_names'):
@@ -597,22 +626,25 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                 for name in wb.defined_names.definedName:
                     if name.value and '[' in str(name.value):  # External reference contains '['
                         names_to_remove.append(name.name)
+                        logger_instance.warning(f"Found external reference in defined name '{name.name}': {name.value}")
                 for name in names_to_remove:
                     try:
                         del wb.defined_names[name]
                         logger_instance.info(f"Removed external defined name: {name}")
-                    except:
-                        pass
+                    except Exception as del_error:
+                        logger_instance.error(f"Failed to remove defined name '{name}': {del_error}")
 
-            # Method 3: Clear _external_links from the workbook archive
+            # Method 3: Check _external_links from the workbook archive
             if hasattr(wb, '_archive') and hasattr(wb._archive, 'namelist'):
                 external_files = [f for f in wb._archive.namelist() if 'externalLink' in f]
                 if external_files:
-                    logger_instance.warning(f"Found external link files in archive: {external_files}")
+                    logger_instance.error(f"CRITICAL: Template contains external link files in archive: {external_files}")
+                    logger_instance.error("These files cannot be removed after loading - template needs to be cleaned!")
         except Exception as link_error:
-            logger_instance.warning(f"Error removing external links: {link_error}")
+            logger_instance.error(f"Error removing external links: {link_error}", exc_info=True)
 
         ws = wb.active
+        logger_instance.info(f"Active worksheet: {ws.title}, dimensions: {ws.max_row}x{ws.max_column}")
         image_map = {}
         for path_obj in Path(temp_dir).iterdir():
             if not path_obj.is_file():
@@ -675,6 +707,7 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
 
             image_path = image_map.get(row_id)
             if image_path:
+                logger_instance.info(f"Processing image for Row {row_id}: {image_path}")
                 if verify_and_process_image(image_path, logger_instance):
                     try:
                         # Validate image file one more time before inserting
@@ -682,7 +715,9 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                             logger_instance.warning(f"Image file invalid after processing for Row {row_id}, skipping")
                         else:
                             # Try to create openpyxl Image object with error handling
+                            logger_instance.info(f"Creating openpyxl Image object for Row {row_id}")
                             img = Image(image_path)
+                            logger_instance.info(f"Image object created successfully for Row {row_id}")
                             img_height_pixels = getattr(img, 'height', 0)
                             img_width_pixels = getattr(img, 'width', 0)
 
@@ -719,18 +754,26 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
                                     x_offset_emu = max(0, x_offset_emu)
                                     y_offset_emu = max(0, y_offset_emu)
 
+                                    logger_instance.info(f"Creating anchor for Row {row_id}: col=0, colOff={x_offset_emu}, row={anchor_row}, rowOff={y_offset_emu}")
                                     marker = AnchorMarker(
                                         col=0,
                                         colOff=x_offset_emu,
                                         row=anchor_row,
                                         rowOff=y_offset_emu
                                     )
+                                    logger_instance.info(f"Creating OneCellAnchor with dimensions: {width_emu}x{height_emu} EMU")
                                     img.anchor = OneCellAnchor(_from=marker, ext=XDRPositiveSize2D(width_emu, height_emu))
+
+                                    image_count_before = len(ws._images) if hasattr(ws, '_images') else 0
+                                    logger_instance.info(f"Adding image to worksheet (current count: {image_count_before})")
                                     ws.add_image(img)
-                                logger_instance.info(
-                                    f"Added image for Row {row_id} at Excel row {row_num}, "
-                                    f"height={CELL_HEIGHT_POINTS} points, width={ws.column_dimensions['A'].width:.2f} points"
-                                )
+                                    image_count_after = len(ws._images) if hasattr(ws, '_images') else 0
+                                    logger_instance.info(f"Image added successfully (new count: {image_count_after})")
+
+                                    logger_instance.info(
+                                        f"✓ Added image for Row {row_id} at Excel row {row_num}, "
+                                        f"height={CELL_HEIGHT_POINTS} points, width={ws.column_dimensions['A'].width:.2f} points"
+                                    )
                     except Exception as img_error:
                         logger_instance.error(f"Failed to insert image for Row {row_id}: {img_error}", exc_info=True)
                         logger_instance.warning(f"Skipping image insertion for Row {row_id}, writing metadata only")
@@ -783,24 +826,120 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
         raise
 
 
+def clean_template_file(template_path: str, logger_instance: logging.Logger) -> str:
+    """
+    Clean external links from template file by recreating the ZIP without external link files.
+    Returns path to cleaned file.
+    """
+    import zipfile
+    import tempfile
+
+    try:
+        cleaned_path = f"{template_path}.cleaned.xlsx"
+        logger_instance.info(f"Cleaning template file: {template_path}")
+
+        # Read the original Excel file as a ZIP
+        with zipfile.ZipFile(template_path, 'r') as zip_in:
+            file_list = zip_in.namelist()
+            logger_instance.info(f"Original file contains {len(file_list)} entries")
+
+            # Identify external link files
+            external_files = [f for f in file_list if 'externalLink' in f.lower()]
+            workbook_rels = [f for f in file_list if 'workbook.xml.rels' in f]
+
+            if external_files:
+                logger_instance.warning(f"Found external link files to remove: {external_files}")
+
+            # Create new ZIP without external link files
+            with zipfile.ZipFile(cleaned_path, 'w', zipfile.ZIP_DEFLATED) as zip_out:
+                for item in file_list:
+                    # Skip external link files
+                    if 'externalLink' in item.lower():
+                        logger_instance.info(f"Skipping: {item}")
+                        continue
+
+                    # Read the file content
+                    data = zip_in.read(item)
+
+                    # If it's workbook.xml.rels, clean external link references
+                    if 'workbook.xml.rels' in item:
+                        try:
+                            import xml.etree.ElementTree as ET
+                            root = ET.fromstring(data)
+
+                            # Remove Relationship elements that point to externalLinks
+                            namespace = {'r': 'http://schemas.openxmlformats.org/package/2006/relationships'}
+                            relationships = root.findall('.//r:Relationship', namespace)
+                            original_count = len(relationships)
+
+                            for rel in list(relationships):
+                                target = rel.get('Target', '')
+                                rel_type = rel.get('Type', '')
+                                if 'externalLink' in target or 'externalLink' in rel_type:
+                                    logger_instance.info(f"Removing external link relationship: {rel.get('Id')} -> {target}")
+                                    root.remove(rel)
+
+                            new_count = len(root.findall('.//r:Relationship', namespace))
+                            if new_count < original_count:
+                                data = ET.tostring(root, encoding='utf-8')
+                                logger_instance.info(f"Cleaned workbook.xml.rels: {original_count} -> {new_count} relationships")
+                        except Exception as xml_error:
+                            logger_instance.warning(f"Could not parse {item} as XML: {xml_error}")
+
+                    # Write to new ZIP
+                    zip_out.writestr(item, data)
+
+        logger_instance.info(f"Created cleaned template: {cleaned_path}")
+        return cleaned_path
+
+    except Exception as e:
+        logger_instance.error(f"Failed to clean template file: {e}", exc_info=True)
+        return template_path  # Return original if cleaning fails
+
 def validate_excel_file(excel_file: str, logger_instance: logging.Logger) -> bool:
     """Validate that the Excel file can be opened without corruption."""
     wb = None
     try:
+        logger_instance.info(f"Starting Excel file validation for: {excel_file}")
+
+        # Check file exists and has size
+        if not os.path.exists(excel_file):
+            logger_instance.error(f"Excel file does not exist: {excel_file}")
+            return False
+
+        file_size = os.path.getsize(excel_file)
+        logger_instance.info(f"Excel file size: {file_size} bytes")
+
+        if file_size < 5000:  # Excel files should be at least 5KB
+            logger_instance.error(f"Excel file too small: {file_size} bytes")
+            return False
+
         # Try to open the file
         wb = load_workbook(excel_file, data_only=False)
         ws = wb.active
 
         # Try to access some basic properties
-        _ = ws.max_row
-        _ = ws.max_column
+        max_row = ws.max_row
+        max_col = ws.max_column
+        logger_instance.info(f"Excel file dimensions: {max_row} rows x {max_col} columns")
 
         # Check if there are any images
         if hasattr(ws, '_images'):
             image_count = len(ws._images)
             logger_instance.info(f"Excel file contains {image_count} images")
 
-        logger_instance.info(f"Excel file validation passed: {excel_file}")
+            # Validate each image
+            for idx, img in enumerate(ws._images):
+                try:
+                    img_path = getattr(img, '_path', 'unknown')
+                    img_width = getattr(img, 'width', 0)
+                    img_height = getattr(img, 'height', 0)
+                    anchor = getattr(img, 'anchor', None)
+                    logger_instance.info(f"  Image {idx+1}: {img_width}x{img_height}, anchor={type(anchor).__name__ if anchor else 'None'}")
+                except Exception as img_check_error:
+                    logger_instance.warning(f"  Image {idx+1} validation warning: {img_check_error}")
+
+        logger_instance.info(f"Excel file validation PASSED: {excel_file}")
         return True
     except Exception as e:
         logger_instance.error(f"Excel file validation FAILED: {excel_file}, error: {e}", exc_info=True)
@@ -841,6 +980,10 @@ def find_header_row_index(excel_file: str, logger_instance: logging.Logger) -> O
 
 def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, target_column: str, row_offset: int, logger_instance: logging.Logger, populate_images: bool = True, populate_msrp: bool = True):
     try:
+        # Clean the file to remove external links
+        logger_instance.info("Cleaning file to remove external links...")
+        local_filename = clean_template_file(local_filename, logger_instance)
+
         wb = load_workbook(local_filename)
 
         # Remove external links more thoroughly to prevent corruption
@@ -1014,6 +1157,10 @@ def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict],
 
 def write_excel_generic(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, row_offset: int, logger_instance: logging.Logger, file_type_id: Optional[int] = None):
     try:
+        # Clean the file to remove external links
+        logger_instance.info("Cleaning file to remove external links...")
+        local_filename = clean_template_file(local_filename, logger_instance)
+
         wb = load_workbook(local_filename)
 
         # Remove external links more thoroughly to prevent corruption
