@@ -171,9 +171,6 @@ class ExcelBridge {
       }
     }
 
-    // Set row height for image rows
-    const IMAGE_ROW_HEIGHT = Math.max(defaultRowHeight, 150);
-
     // Process each data item
     let processedCount = 0;
     for (const rowId of dataRowIds) {
@@ -181,7 +178,7 @@ class ExcelBridge {
       const item = rowDataMap[rowId];
 
       const row = worksheet.getRow(rowNum);
-      row.height = IMAGE_ROW_HEIGHT;
+      row.height = defaultRowHeight;
 
       // Insert image if available
       const imagePath = imageMap[rowId];
@@ -324,15 +321,10 @@ class ExcelBridge {
       if (populateImages && rowId in imageMap) {
         const imagePath = path.join(tempDir, imageMap[rowId]);
         try {
-          // Insert image and get its dimensions
-          const { imgHeightPoints } = await this.insertImageWithEMUAnchor(workbook, worksheet, imagePath, rowNum, 0, {
+          // Insert image — row height is auto-adjusted by insertImageWithEMUAnchor
+          await this.insertImageWithEMUAnchor(workbook, worksheet, imagePath, rowNum, 0, {
             paddingPoints: 2
           });
-
-          // Adjust row height if image is taller
-          if (imgHeightPoints && imgHeightPoints > defaultRowHeight) {
-            row.height = Math.max(defaultRowHeight, imgHeightPoints);
-          }
 
           console.error(`[writeExcelMSRP] Added image for row ${rowId} at Excel row ${rowNum}, height=${row.height}`);
         } catch (error) {
@@ -410,30 +402,33 @@ class ExcelBridge {
       throw new Error(`Invalid image dimensions: ${imgWidthPixels}x${imgHeightPixels}`);
     }
 
-    // Read actual cell dimensions from the worksheet
+    // Read column width from the worksheet
     const col = worksheet.getColumn(colNum + 1); // ExcelJS columns are 1-based
     const row = worksheet.getRow(rowNum);
     const colWidthChars = col.width || 8.43;        // Excel character-width units
-    const rowHeightPoints = row.height || 15;        // Points
 
     // Excel character-width → pixels:  chars * 7 + 5
     const cellWidthPixels = Math.round(colWidthChars * 7 + 5);
-    // Points → pixels
-    const cellHeightPixels = pointsToPixels(rowHeightPoints);
 
     // Apply padding
     const paddingPx = options.paddingPoints ? pointsToPixels(options.paddingPoints) : 4;
+    const paddingPoints = options.paddingPoints || 3;
     const availWidth = Math.max(1, cellWidthPixels - paddingPx * 2);
-    const availHeight = Math.max(1, cellHeightPixels - paddingPx * 2);
 
-    // Scale image to fit within the available cell area (preserve aspect ratio)
-    const scaleX = availWidth / imgWidthPixels;
-    const scaleY = availHeight / imgHeightPixels;
-    const scale = Math.min(scaleX, scaleY, 1);  // never upscale
+    // Scale image to fit column width, preserving aspect ratio (never upscale)
+    const scale = Math.min(availWidth / imgWidthPixels, 1);
 
     const finalWidth = Math.round(imgWidthPixels * scale);
     const finalHeight = Math.round(imgHeightPixels * scale);
     const imgHeightPoints = finalHeight * POINTS_PER_INCH / DPI;
+
+    // Dynamically set row height to fit the scaled image + padding
+    const neededHeightPoints = imgHeightPoints + paddingPoints * 2;
+    const currentRowHeight = row.height || 15;
+    row.height = Math.max(currentRowHeight, neededHeightPoints);
+
+    // Recalculate cell height for centering
+    const cellHeightPixels = pointsToPixels(row.height);
 
     // Calculate centering offsets in pixels
     const xOffsetPixels = Math.max(0, (cellWidthPixels - finalWidth) / 2);
