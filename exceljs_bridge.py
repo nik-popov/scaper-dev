@@ -1,6 +1,7 @@
 import atexit
 import json
 import logging
+import math
 import os
 import queue
 import subprocess
@@ -8,6 +9,19 @@ import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
+
+
+def _sanitize_for_json(obj):
+    """Replace NaN/Infinity with None so JSON.parse on the Node side doesn't choke."""
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    if isinstance(obj, dict):
+        return {k: _sanitize_for_json(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize_for_json(v) for v in obj]
+    return obj
 
 
 class ExcelJSBridgeError(RuntimeError):
@@ -146,7 +160,7 @@ class ExcelJSBridge:
             }
 
             try:
-                process.stdin.write(json.dumps(payload) + "\n")
+                process.stdin.write(json.dumps(_sanitize_for_json(payload)) + "\n")
                 process.stdin.flush()
             except Exception as exc:
                 self._responses.pop(request_id, None)
