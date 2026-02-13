@@ -1,7 +1,7 @@
 """
 Utility module for repairing corrupted Excel files with external link issues.
 This module provides functions to automatically detect and repair Excel files
-before processing them with openpyxl.
+by directly manipulating the xlsx ZIP archive and XML contents.
 """
 
 import logging
@@ -11,7 +11,6 @@ import shutil
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Optional
-from openpyxl import load_workbook
 
 
 def repair_excel_file(input_file: str, output_file: Optional[str] = None, logger: Optional[logging.Logger] = None) -> str:
@@ -216,45 +215,3 @@ def _replace_external_formulas_with_text(sheet_file: Path, logger: logging.Logge
         return False
 
 
-def safe_load_workbook(filename: str, logger: Optional[logging.Logger] = None, **kwargs):
-    """
-    Safely load an Excel workbook, automatically repairing it if corruption is detected.
-
-    Args:
-        filename: Path to the Excel file
-        logger: Optional logger instance
-        **kwargs: Additional arguments to pass to openpyxl.load_workbook
-
-    Returns:
-        Workbook object from openpyxl
-
-    Raises:
-        Exception: If the file cannot be loaded even after repair attempt
-    """
-    if logger is None:
-        logger = logging.getLogger(__name__)
-
-    try:
-        # Try to load normally first
-        return load_workbook(filename, **kwargs)
-    except Exception as e:
-        error_msg = str(e).lower()
-        # Check if it's a corruption-related error
-        if any(keyword in error_msg for keyword in ['external', 'link', 'corrupt', 'repair', 'damaged']):
-            logger.warning(f"Excel file appears corrupted: {e}")
-            logger.info("Attempting automatic repair...")
-
-            # Attempt repair
-            repaired_file = repair_excel_file(filename, logger=logger)
-
-            # Try to load the repaired file
-            try:
-                wb = load_workbook(repaired_file, **kwargs)
-                logger.info("✓ Successfully loaded repaired file")
-                return wb
-            except Exception as repair_error:
-                logger.error(f"Failed to load even after repair: {repair_error}")
-                raise
-        else:
-            # Not a corruption error, re-raise
-            raise

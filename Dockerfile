@@ -19,6 +19,7 @@ RUN pip install -r requirements.txt
 COPY icon_image_lib/ icon_image_lib/
 COPY main.py .
 COPY exceljs_bridge.py .
+COPY excel_repair_utils.py .
 COPY app_config.py .
 COPY email_utils.py .
 COPY s3_utils.py .

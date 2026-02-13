@@ -4,8 +4,10 @@ Test script for Excel repair functionality
 """
 
 import sys
+import zipfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
-from excel_repair_utils import repair_excel_file, safe_load_workbook
+from excel_repair_utils import repair_excel_file
 import logging
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -25,34 +27,57 @@ def test_repair():
     try:
         # Test the repair function
         repaired = repair_excel_file(str(test_file), logger=logger)
-        logger.info(f"✓ Repair function completed. Output: {repaired}")
+        logger.info(f"Repair function completed. Output: {repaired}")
 
-        # Test safe_load_workbook
-        logger.info("Testing safe_load_workbook...")
-        wb = safe_load_workbook(str(test_file), logger=logger, data_only=True)
-        logger.info(f"✓ Loaded workbook with {len(wb.sheetnames)} sheets")
+        # Verify the repaired file is a valid xlsx
+        if not zipfile.is_zipfile(repaired):
+            logger.error("Repaired file is not a valid ZIP archive")
+            return False
 
-        # Print some info
-        ws = wb.active
-        logger.info(f"  Active sheet: {ws.title}")
-        logger.info(f"  Dimensions: {ws.max_row} rows x {ws.max_column} columns")
+        with zipfile.ZipFile(repaired, 'r') as zf:
+            names = zf.namelist()
+            logger.info(f"Repaired file contains {len(names)} entries")
 
-        # Check for #REF values
-        ref_count = 0
-        for row in ws.iter_rows(max_row=10, max_col=10):
-            for cell in row:
-                if cell.value == '#REF':
-                    ref_count += 1
+            # Check for essential xlsx components
+            if 'xl/workbook.xml' not in names:
+                logger.error("Missing workbook.xml in repaired file")
+                return False
 
-        logger.info(f"  Found {ref_count} #REF text values in first 10x10 cells")
+            # Check worksheets exist
+            worksheets = [n for n in names if n.startswith('xl/worksheets/sheet') and n.endswith('.xml')]
+            if not worksheets:
+                logger.error("No worksheets found in repaired file")
+                return False
 
-        wb.close()
+            logger.info(f"Found {len(worksheets)} worksheet(s)")
 
-        logger.info("✓ All tests passed!")
+            # Verify worksheet XML integrity
+            ns = {'ss': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
+            with zf.open(worksheets[0]) as ws_file:
+                tree = ET.parse(ws_file)
+                root = tree.getroot()
+
+                # Count #REF values
+                ref_count = 0
+                for cell in root.findall('.//ss:c', ns):
+                    is_elem = cell.find('.//ss:t', ns)
+                    if is_elem is not None and is_elem.text == '#REF':
+                        ref_count += 1
+
+                logger.info(f"Found {ref_count} #REF text values in first worksheet")
+
+            # Check external links were removed
+            ext_links = [n for n in names if 'externalLink' in n.lower()]
+            if ext_links:
+                logger.warning(f"External links still present: {ext_links}")
+            else:
+                logger.info("External links successfully removed")
+
+        logger.info("All tests passed!")
         return True
 
     except Exception as e:
-        logger.error(f"✗ Test failed: {e}")
+        logger.error(f"Test failed: {e}")
         import traceback
         traceback.print_exc()
         return False

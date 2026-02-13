@@ -21,11 +21,6 @@ Core utilities for repairing Excel files:
   - Replacing external formulas with "#REF" text
   - Fixing linked data type columns (FIELDVALUE, FILTERXML, etc.)
 
-- `safe_load_workbook()` - Drop-in replacement for `openpyxl.load_workbook()` that:
-  - Automatically detects corruption when loading fails
-  - Repairs the file if needed
-  - Returns the workbook ready to use
-
 ### 2. **FastAPI Endpoint** (`/reformatExcel`)
 
 New REST endpoint in [main.py](main.py:1875) for on-demand Excel repair:
@@ -45,14 +40,9 @@ Response: {
 
 ### 3. **Automatic Repair Integration**
 
-Updated [main.py:698](main.py:698) to use `safe_load_workbook()` instead of `load_workbook()`:
-
-```python
-# OLD: wb = load_workbook(cleaned_filename)
-# NEW: wb = safe_load_workbook(cleaned_filename, logger=logger_instance)
-```
-
-This ensures corrupted files are automatically repaired during processing.
+The `clean_template_file()` function in `main.py` automatically repairs corrupted Excel files
+before they are processed by the ExcelJS bridge. All Excel writing is now handled by ExcelJS
+(Node.js) and reading/validation uses zipfile + XML parsing (no openpyxl dependency).
 
 ### 4. **Command-Line Tools**
 
@@ -108,12 +98,12 @@ On your `corrupt.xlsx` file:
 ### In Your Python Code
 
 ```python
-from excel_repair_utils import safe_load_workbook
+from excel_repair_utils import repair_excel_file
 
-# Automatic repair if needed
-wb = safe_load_workbook('myfile.xlsx', logger=logger)
-ws = wb.active
-# ... process normally
+# Repair a file before processing
+repaired_path = repair_excel_file('myfile.xlsx', logger=logger)
+# repaired_path is the original file if no repair was needed,
+# or a new _repaired.xlsx file if corruption was detected and fixed
 ```
 
 ### As API Endpoint
@@ -164,7 +154,7 @@ After:  #REF (plain text)
 
 ## Files Modified
 
-- ✓ [main.py](main.py) - Added `/reformatExcel` endpoint and integrated `safe_load_workbook`
+- ✓ [main.py](main.py) - Added `/reformatExcel` endpoint, uses ExcelJS for all Excel writing
 - ✓ [excel_repair_utils.py](excel_repair_utils.py) - New repair utilities module
 - ✓ [repair_excel.py](repair_excel.py) - Enhanced standalone repair script
 - ✓ [test_excel_repair.py](test_excel_repair.py) - Test suite

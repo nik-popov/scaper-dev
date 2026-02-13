@@ -13,14 +13,10 @@ import aiohttp
 import pandas as pd
 import pyodbc
 import requests
-from openpyxl.drawing.xdr import XDRPositiveSize2D
-from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, OneCellAnchor
+import xml.etree.ElementTree as ET
 from aiohttp import ClientTimeout
 from aiohttp_retry import RetryClient, ExponentialRetry
 from fastapi import FastAPI, BackgroundTasks
-from openpyxl import load_workbook
-from openpyxl.drawing.image import Image
-from openpyxl.utils import column_index_from_string
 from PIL import Image as PILImage
 from PIL import UnidentifiedImageError, ImageOps
 from tldextract import tldextract
@@ -34,7 +30,7 @@ from functools import partial
 from app_config import engine, conn_str
 from email_utils import send_email, send_message_email
 from s3_utils import upload_file_to_space
-from excel_repair_utils import repair_excel_file, safe_load_workbook
+from excel_repair_utils import repair_excel_file
 from exceljs_bridge import get_excel_bridge
 # --- Global Setup ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -43,7 +39,6 @@ app = FastAPI()
 
 # --- Constants ---
 MAX_THREADS = int(os.environ.get('MAX_THREADS', 10))
-USE_EXCELJS = os.environ.get('USE_EXCELJS', 'true').lower() == 'true'
 VALID_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/bmp', 'image/webp', 'image/avif', 'image/tiff', 'image/x-icon']
 MIN_IMAGE_SIZE = 1000  # Minimum content length in bytes
 MAX_IMAGE_DIMENSION = 130  # For resizing
@@ -51,13 +46,6 @@ MIN_DIMENSION_FOR_BORDER = 10  # Minimum dimension to attempt border removal
 BORDER_CROP_WIDTH = 5  # Pixels to check for border on each side
 BORDER_UNIFORMITY_THRESHOLD = 0.05  # 5% of pixels must match dominant color
 BORDER_COLOR_TOLERANCE = 10  # RGB tolerance for border color matching
-EMU_PER_PIXEL = 9525  # EMUs per pixel at 96 DPI
-def points_to_pixels(points):
-    """Convert points to pixels assuming 96 DPI (1 point = 1.333 pixels)."""
-    return points * 1.333
-def pixels_to_EMU(pixels: float) -> int:
-    """Convert pixels to English Metric Units (EMU) using 96 DPI."""
-    return int(round(pixels * EMU_PER_PIXEL))
 def get_user_agents(logger_instance: logging.Logger) -> List[str]:
     """
     Fetches a list of user agents from the DataProxy API.
@@ -349,15 +337,6 @@ def resize_image(image_path: str, logger_instance: logging.Logger) -> bool:
         logger_instance.error(f"Error resizing image {image_path}: {e}", exc_info=True)
         return False
 
-def get_last_non_empty_row(ws, column: str, header_row: int, logger_instance: logging.Logger) -> int:
-    """Find the last non-empty row in the specified column, starting after header_row."""
-    last_row = header_row
-    for row in ws[f"{column}{header_row + 1}:{column}{ws.max_row}"]:
-        if row[0].value is not None and str(row[0].value).strip():
-            last_row = max(last_row, row[0].row)
-    logger_instance.info(f"Last non-empty row in column {column}: {last_row}")
-    return last_row
-
 def verify_and_process_image(image_path: str, logger_instance: logging.Logger) -> bool:
     """Verify, crop, and process image in memory to avoid corruption."""
     img = None
@@ -630,328 +609,6 @@ def get_valid_indices_with_padding(valid_indices, max_index, pad=5):
         padded.update(range(start, end))
     return sorted(padded)
 
-def fix_excel_image_paths(excel_file: str, logger_instance: logging.Logger) -> bool:
-    """
-    Fix openpyxl 3.1.5 bug where image relationship paths are absolute instead of relative.
-    Post-processes the saved Excel file to change /xl/media/ to ../media/ in drawing relationships.
-    """
-    try:
-        logger_instance.info(f"Fixing image paths in: {excel_file}")
-
-        # Create a temporary file for the fixed version
-        temp_file = excel_file + ".tmp"
-
-        # Open the Excel file as a ZIP
-        with zipfile.ZipFile(excel_file, 'r') as zip_read:
-            with zipfile.ZipFile(temp_file, 'w', zipfile.ZIP_DEFLATED) as zip_write:
-                for item in zip_read.infolist():
-                    data = zip_read.read(item.filename)
-
-                    # Fix the drawing relationships file
-                    if item.filename.endswith('drawings/_rels/drawing1.xml.rels'):
-                        data_str = data.decode('utf-8')
-                        # Replace absolute paths with relative paths
-                        data_str = data_str.replace('Target="/xl/media/', 'Target="../media/')
-                        data = data_str.encode('utf-8')
-                        logger_instance.info(f"Fixed image paths in {item.filename}")
-
-                    zip_write.writestr(item, data)
-
-        # Replace the original file with the fixed one
-        shutil.move(temp_file, excel_file)
-        logger_instance.info(f"Successfully fixed image paths in: {excel_file}")
-        return True
-
-    except Exception as e:
-        logger_instance.error(f"Failed to fix image paths in {excel_file}: {e}", exc_info=True)
-        # Clean up temp file if it exists
-        if os.path.exists(temp_file):
-            os.remove(temp_file)
-        return False
-
-
-def _write_excel_distro_openpyxl(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, logger_instance: logging.Logger, row_offset: int = 0):
-    try:
-        logger_instance.info(f"=== Starting write_excel_distro ===")
-        logger_instance.info(f"Template file: {local_filename}, size: {os.path.getsize(local_filename)} bytes")
-
-        # Clean the template file (mark external links as broken to preserve formulas)
-        logger_instance.info("Cleaning template file (marking external links as broken)...")
-        original_filename = local_filename
-        cleaned_filename = clean_template_file(local_filename, logger_instance, mark_broken=True)
-        logger_instance.info(f"Using cleaned template: {cleaned_filename}")
-
-        # Validate template file BEFORE loading
-        logger_instance.info("Validating template file before processing...")
-        if not validate_excel_file(cleaned_filename, logger_instance):
-            logger_instance.warning("Template file has validation warnings, but proceeding...")
-
-        header_row = int(header_row)
-        if header_row < 0:
-            logger_instance.error(f"Invalid header_row {header_row}. Setting to 0.")
-            header_row = 0
-        if row_offset < 0:
-            logger_instance.warning(f"Negative row_offset {row_offset} provided. Ensure this is intentional.")
-
-        logger_instance.info(f"Loading workbook from: {cleaned_filename}")
-
-        # Load the workbook (with automatic repair if corrupted)
-        wb = safe_load_workbook(cleaned_filename, logger=logger_instance)
-        logger_instance.info(f"Workbook loaded successfully")
-
-        ws = wb.active
-        logger_instance.info(f"Active worksheet: {ws.title}, dimensions: {ws.max_row}x{ws.max_column}")
-
-        # CRITICAL FIX: Clear ALL existing images to prevent TwoCellAnchor/OneCellAnchor conflicts
-        if hasattr(ws, '_images') and ws._images:
-            existing_count = len(ws._images)
-            ws._images = []
-            logger_instance.info(f"Cleared {existing_count} existing images from template to prevent anchor conflicts")
-
-        image_map = {}
-        for path_obj in Path(temp_dir).iterdir():
-            if not path_obj.is_file():
-                continue
-            stem = path_obj.stem
-            if stem.isdigit():
-                image_map[int(stem)] = str(path_obj)
-
-        row_dim = ws.row_dimensions.get(header_row + 1)
-        if row_dim is not None and getattr(row_dim, "height", None) is not None:
-            DEFAULT_ROW_HEIGHT_POINTS = row_dim.height
-        else:
-            DEFAULT_ROW_HEIGHT_POINTS = 12.75
-        logger_instance.info(f"Using template row height: {DEFAULT_ROW_HEIGHT_POINTS} points from row {header_row + 1}")
-
-        row_data_map = {item['ExcelRowID']: item for item in image_data}
-        last_non_empty_row = get_last_non_empty_row(ws, column='B', header_row=header_row, logger_instance=logger_instance)
-
-        data_row_ids = sorted(row_data_map.keys())
-        if data_row_ids:
-            min_row_id = data_row_ids[0]
-            max_row_id = data_row_ids[-1]
-        else:
-            min_row_id = 1
-            relative_last_row = last_non_empty_row - (header_row + 1)
-            relative_last_row = max(1, relative_last_row)
-            max_row_id = relative_last_row
-            logger_instance.warning(
-                f"No data in image_data, deriving row range 1-{max_row_id} from template last row {last_non_empty_row}"
-            )
-
-        base_row = header_row + row_offset + 2
-        if base_row < 1:
-            logger_instance.error(f"Computed base_row {base_row} is less than 1. Aborting.")
-            raise ValueError("Invalid row range: base_row is less than 1")
-
-        # CRITICAL FIX: Only create rows that have actual data, not the entire range
-        # Create mapping of ExcelRowID -> Excel row number
-        row_id_to_row_num = {}
-        for idx, row_id in enumerate(data_row_ids):
-            row_id_to_row_num[row_id] = base_row + idx
-
-        # Calculate max row needed (only for rows with data)
-        max_needed_row = base_row + len(data_row_ids) - 1 if data_row_ids else base_row
-        max_needed_row = max(max_needed_row, last_non_empty_row)
-
-        logger_instance.info(
-            f"Row mapping summary -> base_row: {base_row}, min_row_id: {min_row_id}, max_row_id: {max_row_id}, "
-            f"data_rows_count: {len(data_row_ids)}, max_needed_row: {max_needed_row}"
-        )
-
-        if ws.max_row < max_needed_row:
-            logger_instance.info(f"Appending {max_needed_row - ws.max_row} rows to worksheet")
-            for row_num in range(ws.max_row + 1, max_needed_row + 1):
-                ws.append([''] * ws.max_column)
-                ws.row_dimensions[row_num].height = DEFAULT_ROW_HEIGHT_POINTS
-
-        CELL_WIDTH_POINTS = 100
-        CELL_HEIGHT_POINTS = max(DEFAULT_ROW_HEIGHT_POINTS, 150)
-        PADDING_POINTS = 5
-
-        # Process only rows that actually have data
-        for row_id in data_row_ids:
-            row_num = row_id_to_row_num[row_id]
-
-            ws.row_dimensions[row_num].height = CELL_HEIGHT_POINTS
-
-            image_path = image_map.get(row_id)
-            if image_path:
-                logger_instance.info(f"DEBUG: Processing image for Row {row_id}: {image_path}")
-                if not verify_and_process_image(image_path, logger_instance):
-                    error_msg = f"DEBUG: verify_and_process_image FAILED for Row {row_id} at {image_path}"
-                    logger_instance.error(error_msg)
-                    raise ValueError(error_msg)
-
-                try:
-                    # Validate image file one more time before inserting
-                    if not os.path.exists(image_path):
-                        error_msg = f"DEBUG: Image file DOES NOT EXIST after verify_and_process for Row {row_id}: {image_path}"
-                        logger_instance.error(error_msg)
-                        raise FileNotFoundError(error_msg)
-
-                    file_size = os.path.getsize(image_path)
-                    if file_size < MIN_IMAGE_SIZE:
-                        error_msg = f"DEBUG: Image file TOO SMALL after verify_and_process for Row {row_id}: {file_size} bytes at {image_path}"
-                        logger_instance.error(error_msg)
-                        raise ValueError(error_msg)
-
-                    # CRITICAL: Validate PIL can read the image and get dimensions BEFORE creating openpyxl Image
-                    try:
-                        pil_img = PILImage.open(image_path)
-                        pil_width, pil_height = pil_img.size
-                        pil_img.close()
-                        if pil_width <= 0 or pil_height <= 0:
-                            error_msg = f"DEBUG: PIL image has invalid dimensions for Row {row_id}: {pil_width}x{pil_height}"
-                            logger_instance.error(error_msg)
-                            raise ValueError(error_msg)
-                        logger_instance.info(f"DEBUG: PIL validated image dimensions for Row {row_id}: {pil_width}x{pil_height}")
-                    except Exception as pil_error:
-                        error_msg = f"DEBUG: PIL failed to read image for Row {row_id}: {pil_error}"
-                        logger_instance.error(error_msg)
-                        raise ValueError(error_msg) from pil_error
-
-                    # Try to create openpyxl Image object with error handling
-                    logger_instance.info(f"DEBUG: Creating openpyxl Image object for Row {row_id}")
-                    img = Image(image_path)
-                    logger_instance.info(f"Image object created successfully for Row {row_id}")
-                    img_height_pixels = getattr(img, 'height', 0)
-                    img_width_pixels = getattr(img, 'width', 0)
-
-                    # Validate dimensions
-                    if img_height_pixels <= 0 or img_width_pixels <= 0:
-                        error_msg = f"DEBUG: Invalid image dimensions for Row {row_id}: {img_width_pixels}x{img_height_pixels}"
-                        logger_instance.error(error_msg)
-                        raise ValueError(error_msg)
-
-                    img_height_points = img_height_pixels * 72 / 96
-                    img_width_points = img_width_pixels / 7
-
-                    required_width = img_width_points + PADDING_POINTS * 2
-                    current_width = ws.column_dimensions['A'].width or 8.43
-                    ws.column_dimensions['A'].width = min(CELL_WIDTH_POINTS, max(current_width, required_width))
-
-                    cell_width_pixels = ws.column_dimensions['A'].width * 7
-                    cell_height_pixels = points_to_pixels(CELL_HEIGHT_POINTS)
-                    x_offset_pixels = max(0, (cell_width_pixels - img_width_pixels) / 2)
-                    y_offset_pixels = max(0, (cell_height_pixels - img_height_pixels) / 2)
-
-                    width_emu = pixels_to_EMU(img_width_pixels)
-                    height_emu = pixels_to_EMU(img_height_pixels)
-
-                    # Validate EMU values to prevent XML corruption
-                    if width_emu <= 0 or height_emu <= 0:
-                        error_msg = f"DEBUG: Invalid EMU dimensions for Row {row_id}: {width_emu}x{height_emu}"
-                        logger_instance.error(error_msg)
-                        raise ValueError(error_msg)
-                    elif width_emu > 10000000 or height_emu > 10000000:  # Max ~1050 pixels
-                        error_msg = f"DEBUG: EMU dimensions too large for Row {row_id}: {width_emu}x{height_emu}"
-                        logger_instance.error(error_msg)
-                        raise ValueError(error_msg)
-
-                    anchor_row = max(0, row_num - 1)
-                    x_offset_emu = pixels_to_EMU(x_offset_pixels)
-                    y_offset_emu = pixels_to_EMU(y_offset_pixels)
-
-                    # Ensure offsets are non-negative and within valid range
-                    # Max offset is approximately 9,525,000 EMU (1000 pixels)
-                    MAX_OFFSET_EMU = 9525000
-                    x_offset_emu = max(0, min(x_offset_emu, MAX_OFFSET_EMU))
-                    y_offset_emu = max(0, min(y_offset_emu, MAX_OFFSET_EMU))
-
-                    logger_instance.info(
-                        f"Creating anchor for Row {row_id} at Excel row {row_num}: "
-                        f"marker(col=0, colOff={x_offset_emu}, row={anchor_row}, rowOff={y_offset_emu}), "
-                        f"size({width_emu}x{height_emu} EMU = {img_width_pixels}x{img_height_pixels} px)"
-                    )
-                    marker = AnchorMarker(
-                        col=0,
-                        colOff=x_offset_emu,
-                        row=anchor_row,
-                        rowOff=y_offset_emu
-                    )
-                    img.anchor = OneCellAnchor(_from=marker, ext=XDRPositiveSize2D(width_emu, height_emu))
-
-                    # CRITICAL: Final validation before adding to worksheet
-                    # Ensure Image object still has valid dimensions after anchor is set
-                    final_width = getattr(img, 'width', 0)
-                    final_height = getattr(img, 'height', 0)
-                    if final_width <= 0 or final_height <= 0:
-                        error_msg = f"CRITICAL: Image dimensions became 0 after anchor was set for Row {row_id}: {final_width}x{final_height}"
-                        logger_instance.error(error_msg)
-                        raise ValueError(error_msg)
-
-                    image_count_before = len(ws._images) if hasattr(ws, '_images') else 0
-                    logger_instance.info(f"Adding image to worksheet (current count: {image_count_before})")
-                    ws.add_image(img)
-                    image_count_after = len(ws._images) if hasattr(ws, '_images') else 0
-                    logger_instance.info(f"Image added successfully (new count: {image_count_after})")
-
-                    logger_instance.info(
-                        f"✓ Added image for Row {row_id} at Excel row {row_num}, "
-                        f"height={CELL_HEIGHT_POINTS} points, width={ws.column_dimensions['A'].width:.2f} points"
-                    )
-                except Exception as img_error:
-                    logger_instance.error(f"DEBUG: EXCEPTION while inserting image for Row {row_id}: {img_error}", exc_info=True)
-                    raise  # Re-raise to stop execution for debugging
-            else:
-                logger_instance.info(f"No image found for Row {row_id}, writing metadata only")
-
-            item = row_data_map.get(row_id)
-            if item:
-                if row_num > header_row + 1:
-                    ws[f"B{row_num}"] = item.get('Brand', '')
-                    ws[f"D{row_num}"] = item.get('Style', '')
-                    ws[f"E{row_num}"] = item.get('Color', '')
-                    ws[f"H{row_num}"] = item.get('Category', '')
-                    logger_instance.info(f"Wrote metadata for Row {row_id} at Excel row {row_num}")
-                else:
-                    logger_instance.warning(f"Skipping metadata write for row {row_num} as it is the header row")
-            else:
-                if row_num > header_row + 1:
-                    ws[f"B{row_num}"] = ''
-                    ws[f"D{row_num}"] = ''
-                    ws[f"E{row_num}"] = ''
-                    ws[f"H{row_num}"] = ''
-                    logger_instance.info(f"Filled missing row {row_num} (ExcelRowID {row_id}) with empty metadata")
-                else:
-                    logger_instance.info(f"Skipping row {row_num} (ExcelRowID {row_id}) as it is the header row")
-
-        if ws.max_row > max_needed_row:
-            logger_instance.info(f"Deleting {ws.max_row - max_needed_row} rows after row {max_needed_row}")
-            ws.delete_rows(max_needed_row + 1, ws.max_row - max_needed_row)
-
-        logger_instance.info("Setting worksheet view to A1")
-        ws.sheet_view.topLeftCell = 'A1'
-
-        # Save to ORIGINAL filename (not the cleaned one) so upload works correctly
-        try:
-            wb.save(original_filename)
-            logger_instance.info(f"Excel file saved: {original_filename}, size: {os.path.getsize(original_filename)} bytes")
-        finally:
-            wb.close()
-            logger_instance.info(f"Excel workbook closed: {original_filename}")
-
-        # CRITICAL FIX: Fix openpyxl 3.1.5 bug with absolute image paths
-        if not fix_excel_image_paths(original_filename, logger_instance):
-            logger_instance.warning(f"Failed to fix image paths, file may be corrupted")
-
-        # Clean up the temporary cleaned file
-        if cleaned_filename != original_filename and os.path.exists(cleaned_filename):
-            try:
-                os.remove(cleaned_filename)
-                logger_instance.info(f"Removed temporary cleaned file: {cleaned_filename}")
-            except:
-                pass
-
-        # Validate the saved file
-        logger_instance.info("Validating saved Excel file...")
-        if not validate_excel_file(original_filename, logger_instance):
-            logger_instance.error(f"Excel file failed validation after save: {original_filename}")
-            raise ValueError(f"Generated Excel file is corrupted: {original_filename}")
-    except Exception as e:
-        logger_instance.error(f"Error writing to DISTRO Excel file: {e}", exc_info=True)
-        raise
 
 
 def clean_template_file(template_path: str, logger_instance: logging.Logger, mark_broken: bool = True) -> str:
@@ -966,9 +623,6 @@ def clean_template_file(template_path: str, logger_instance: logging.Logger, mar
 
     Returns path to cleaned file.
     """
-    import zipfile
-    import xml.etree.ElementTree as ET
-
     try:
         cleaned_path = f"{template_path}.cleaned.xlsx"
         logger_instance.info(f"Cleaning template file: {template_path} (mark_broken={mark_broken})")
@@ -1100,36 +754,29 @@ def clean_template_file(template_path: str, logger_instance: logging.Logger, mar
 
         logger_instance.info(f"Created cleaned template: {cleaned_path}")
 
-        # Verify the cleaned file can be loaded (without data_only to ensure full functionality)
+        # Verify the cleaned file is a valid xlsx archive
         try:
-            test_wb = load_workbook(cleaned_path)
-            test_wb.close()
-            logger_instance.info("Verified cleaned template can be loaded successfully")
+            if not zipfile.is_zipfile(cleaned_path):
+                raise ValueError("Cleaned file is not a valid ZIP archive")
+            with zipfile.ZipFile(cleaned_path, 'r') as zf:
+                if 'xl/workbook.xml' not in zf.namelist():
+                    raise ValueError("Cleaned file is missing workbook.xml")
+            logger_instance.info("Verified cleaned template is a valid xlsx archive")
             return cleaned_path
         except Exception as verify_error:
             logger_instance.error(f"Cleaned file verification failed: {verify_error}")
-            logger_instance.info("Attempting to use original file with data_only=True verification...")
-            # Try to verify original can at least be loaded with data_only
-            try:
-                test_wb2 = load_workbook(template_path, data_only=True)
-                test_wb2.close()
-                logger_instance.warning("Original file can only be loaded with data_only=True - images may not work properly")
-                return template_path
-            except:
-                logger_instance.error("Both cleaned and original files have issues")
-                return template_path
+            logger_instance.info("Falling back to original file...")
+            return template_path
 
     except Exception as e:
         logger_instance.error(f"Failed to clean template file: {e}", exc_info=True)
         return template_path  # Return original if cleaning fails
 
 def validate_excel_file(excel_file: str, logger_instance: logging.Logger) -> bool:
-    """Validate that the Excel file can be opened without corruption."""
-    wb = None
+    """Validate that the Excel file is a valid xlsx archive with expected structure."""
     try:
         logger_instance.info(f"Starting Excel file validation for: {excel_file}")
 
-        # Check file exists and has size
         if not os.path.exists(excel_file):
             logger_instance.error(f"Excel file does not exist: {excel_file}")
             return False
@@ -1137,507 +784,122 @@ def validate_excel_file(excel_file: str, logger_instance: logging.Logger) -> boo
         file_size = os.path.getsize(excel_file)
         logger_instance.info(f"Excel file size: {file_size} bytes")
 
-        if file_size < 5000:  # Excel files should be at least 5KB
+        if file_size < 5000:
             logger_instance.error(f"Excel file too small: {file_size} bytes")
             return False
 
-        # Try to open the file
-        wb = load_workbook(excel_file, data_only=False)
-        ws = wb.active
+        if not zipfile.is_zipfile(excel_file):
+            logger_instance.error(f"Excel file is not a valid ZIP archive: {excel_file}")
+            return False
 
-        # Try to access some basic properties
-        max_row = ws.max_row
-        max_col = ws.max_column
-        logger_instance.info(f"Excel file dimensions: {max_row} rows x {max_col} columns")
+        with zipfile.ZipFile(excel_file, 'r') as zf:
+            names = zf.namelist()
 
-        # Check if there are any images
-        if hasattr(ws, '_images'):
-            image_count = len(ws._images)
-            logger_instance.info(f"Excel file contains {image_count} images")
+            # Check for essential xlsx components
+            required = ['[Content_Types].xml', 'xl/workbook.xml']
+            for req in required:
+                if req not in names:
+                    logger_instance.error(f"Missing required xlsx component: {req}")
+                    return False
 
-            # Validate each image
-            for idx, img in enumerate(ws._images):
-                try:
-                    img_width = getattr(img, 'width', 0)
-                    img_height = getattr(img, 'height', 0)
-                    anchor = getattr(img, 'anchor', None)
-                    anchor_type = type(anchor).__name__ if anchor else 'None'
+            # Check for at least one worksheet
+            worksheets = [n for n in names if n.startswith('xl/worksheets/sheet') and n.endswith('.xml')]
+            if not worksheets:
+                logger_instance.error("No worksheets found in xlsx file")
+                return False
 
-                    # Get detailed anchor info
-                    anchor_details = ""
-                    if anchor and hasattr(anchor, '_from'):
-                        marker = anchor._from
-                        anchor_details = f", pos(col={getattr(marker, 'col', '?')}, row={getattr(marker, 'row', '?')})"
-                        if hasattr(marker, 'colOff') and hasattr(marker, 'rowOff'):
-                            anchor_details += f", off({getattr(marker, 'colOff', 0)}, {getattr(marker, 'rowOff', 0)})"
+            # Check for media files (images)
+            media_files = [n for n in names if n.startswith('xl/media/')]
+            if media_files:
+                logger_instance.info(f"Excel file contains {len(media_files)} media files (images)")
 
-                    logger_instance.info(f"  Image {idx+1}: {img_width}x{img_height}, anchor={anchor_type}{anchor_details}")
-                except Exception as img_check_error:
-                    logger_instance.warning(f"  Image {idx+1} validation warning: {img_check_error}")
+            # Verify worksheet XML integrity
+            try:
+                with zf.open(worksheets[0]) as ws_file:
+                    ET.parse(ws_file)
+                logger_instance.info("Worksheet XML is valid")
+            except ET.ParseError as xml_err:
+                logger_instance.error(f"Worksheet XML is corrupted: {xml_err}")
+                return False
 
         logger_instance.info(f"Excel file validation PASSED: {excel_file}")
         return True
     except Exception as e:
         logger_instance.error(f"Excel file validation FAILED: {excel_file}, error: {e}", exc_info=True)
         return False
-    finally:
-        if wb is not None:
-            try:
-                wb.close()
-            except:
-                pass
 
 def find_header_row_index(excel_file: str, logger_instance: logging.Logger) -> Optional[int]:
-    wb = None
+    """Find the header row by parsing the xlsx XML directly."""
     try:
-        wb = load_workbook(excel_file, read_only=True)
-        ws = wb.active
-        keywords = {'id', 'name', 'product', 'brand', 'sku', 'category', 'color', 'price', 'description'}
-        best_row, best_score = None, 0
-        for i, row in enumerate(ws.iter_rows(min_row=1, max_row=10, values_only=True), 1):
-            if not row:
-                continue
-            cells = [str(c).strip().lower() for c in row if isinstance(c, str)]
-            score = len(cells) + len(set(cells)) + sum(any(k in c for k in keywords) for c in cells)
-            if score > best_score:
-                best_score, best_row = score, i
-        if best_row and best_score > 3:
-            return best_row - 1  # Convert to 0-based indexing
-        return None
+        shared_strings = []
+        ns = {'ss': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
+
+        with zipfile.ZipFile(excel_file, 'r') as zf:
+            # Read shared strings table
+            if 'xl/sharedStrings.xml' in zf.namelist():
+                with zf.open('xl/sharedStrings.xml') as ss_file:
+                    ss_tree = ET.parse(ss_file)
+                    ss_root = ss_tree.getroot()
+                    for si in ss_root.findall('ss:si', ns):
+                        t_elem = si.find('ss:t', ns)
+                        if t_elem is not None and t_elem.text:
+                            shared_strings.append(t_elem.text)
+                        else:
+                            text_parts = []
+                            for r_elem in si.findall('.//ss:t', ns):
+                                if r_elem.text:
+                                    text_parts.append(r_elem.text)
+                            shared_strings.append(''.join(text_parts))
+
+            # Read first worksheet
+            worksheets = sorted([n for n in zf.namelist() if n.startswith('xl/worksheets/sheet') and n.endswith('.xml')])
+            if not worksheets:
+                return None
+
+            with zf.open(worksheets[0]) as ws_file:
+                ws_tree = ET.parse(ws_file)
+                ws_root = ws_tree.getroot()
+
+                keywords = {'id', 'name', 'product', 'brand', 'sku', 'category', 'color', 'price', 'description'}
+                best_row, best_score = None, 0
+
+                rows_processed = 0
+                for row_elem in ws_root.findall('.//ss:row', ns):
+                    rows_processed += 1
+                    if rows_processed > 10:
+                        break
+
+                    row_num = int(row_elem.get('r', rows_processed))
+                    str_cells = []
+
+                    for cell in row_elem.findall('ss:c', ns):
+                        cell_type = cell.get('t', '')
+                        v_elem = cell.find('ss:v', ns)
+
+                        if cell_type == 's' and v_elem is not None:
+                            idx = int(v_elem.text)
+                            if idx < len(shared_strings):
+                                str_cells.append(shared_strings[idx].strip().lower())
+                        elif cell_type == 'inlineStr':
+                            is_elem = cell.find('.//ss:t', ns)
+                            if is_elem is not None and is_elem.text:
+                                str_cells.append(is_elem.text.strip().lower())
+
+                    if not str_cells:
+                        continue
+                    score = len(str_cells) + len(set(str_cells)) + sum(any(k in c for k in keywords) for c in str_cells)
+                    if score > best_score:
+                        best_score, best_row = score, row_num
+
+                if best_row and best_score > 3:
+                    return best_row - 1  # Convert to 0-based indexing
+                return None
     except Exception as e:
         logger_instance.error(f"Could not find header row: {e}")
         return None
-    finally:
-        if wb is not None:
-            try:
-                wb.close()
-            except:
-                pass
-
-def _write_excel_msrp_openpyxl(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, target_column: str, row_offset: int, logger_instance: logging.Logger, populate_images: bool = True, populate_msrp: bool = True):
-    try:
-        # Clean the file (mark external links as broken to preserve formulas)
-        logger_instance.info("Cleaning file (marking external links as broken)...")
-        original_filename = local_filename
-        cleaned_filename = clean_template_file(local_filename, logger_instance, mark_broken=True)
-
-        # Load the workbook
-        wb = load_workbook(cleaned_filename)
-        ws = wb.active
-
-        # CRITICAL FIX: Clear ALL existing images to prevent TwoCellAnchor/OneCellAnchor conflicts
-        if hasattr(ws, '_images') and ws._images:
-            existing_count = len(ws._images)
-            ws._images = []
-            logger_instance.info(f"Cleared {existing_count} existing images from template to prevent anchor conflicts")
-
-        image_map = {int(Path(f).stem): f for f in os.listdir(temp_dir) if Path(f).stem.isdigit()}
-        if populate_msrp and not re.match(r'^[A-Z]+$', target_column):
-            raise ValueError(f"Invalid target_column: {target_column}. Must be a valid Excel column letter (e.g., 'A', 'B', 'AA').")
-
-        header_row = int(header_row)
-        if header_row < 0:
-            logger_instance.error(f"Invalid header_row {header_row}. Setting to 0.")
-            header_row = 0
-        if row_offset < 0:
-            logger_instance.warning(f"Negative row_offset {row_offset} provided. Ensure this is intentional.")
-
-        row_dim = ws.row_dimensions.get(header_row + 1)
-        DEFAULT_ROW_HEIGHT_POINTS = row_dim.height if row_dim and row_dim.height is not None else 12.75
-        logger_instance.info(f"Using template row height: {DEFAULT_ROW_HEIGHT_POINTS} points from row {header_row + 1}")
-
-        row_data_map = {item['ExcelRowID']: item for item in image_data}
-        last_non_empty_row = get_last_non_empty_row(ws, column='B', header_row=header_row, logger_instance=logger_instance)
-
-        data_row_ids = sorted(row_data_map.keys())
-        if data_row_ids:
-            min_row_id = data_row_ids[0]
-            max_row_id = data_row_ids[-1]
-        else:
-            min_row_id = 1
-            relative_last_row = last_non_empty_row - (header_row + 1)
-            relative_last_row = max(1, relative_last_row)
-            max_row_id = relative_last_row
-            logger_instance.warning(
-                f"No data in image_data, deriving row range 1-{max_row_id} from template last row {last_non_empty_row}"
-            )
-
-        base_row = header_row + row_offset + 2
-        if base_row < 1:
-            logger_instance.error(f"Computed base_row {base_row} is less than 1. Aborting.")
-            raise ValueError("Invalid row range: base_row is less than 1")
-
-        # CRITICAL FIX: Only create rows that have actual data
-        row_id_to_row_num = {}
-        for idx, row_id in enumerate(data_row_ids):
-            row_id_to_row_num[row_id] = base_row + idx
-
-        max_needed_row = base_row + len(data_row_ids) - 1 if data_row_ids else base_row
-        max_needed_row = max(max_needed_row, last_non_empty_row)
-
-        logger_instance.info(
-            f"Row mapping summary -> base_row: {base_row}, min_row_id: {min_row_id}, max_row_id: {max_row_id}, "
-            f"data_rows_count: {len(data_row_ids)}, max_needed_row: {max_needed_row}"
-        )
-
-        if ws.max_row < max_needed_row:
-            logger_instance.info(f"Appending {max_needed_row - ws.max_row} rows to worksheet")
-            for row_num in range(ws.max_row + 1, max_needed_row + 1):
-                ws.append([''] * ws.max_column)
-                ws.row_dimensions[row_num].height = DEFAULT_ROW_HEIGHT_POINTS
-
-        for row_id in data_row_ids:
-            row_num = row_id_to_row_num[row_id]
-
-            ws.row_dimensions[row_num].height = DEFAULT_ROW_HEIGHT_POINTS
-
-            if row_id in row_data_map:
-                item = row_data_map[row_id]
-                if populate_images:
-                    if row_id in image_map:
-                        image_path = os.path.join(temp_dir, image_map[row_id])
-                        if verify_and_process_image(image_path, logger_instance):
-                            try:
-                                # Validate image file before inserting
-                                if not os.path.exists(image_path) or os.path.getsize(image_path) < MIN_IMAGE_SIZE:
-                                    logger_instance.warning(f"Image file invalid after processing for Row {row_id}, skipping")
-                                else:
-                                    # CRITICAL: Validate PIL can read the image BEFORE creating openpyxl Image
-                                    try:
-                                        pil_img = PILImage.open(image_path)
-                                        pil_width, pil_height = pil_img.size
-                                        pil_img.close()
-                                        if pil_width <= 0 or pil_height <= 0:
-                                            logger_instance.warning(f"PIL image has invalid dimensions for Row {row_id}: {pil_width}x{pil_height}, skipping")
-                                            continue
-                                    except Exception as pil_error:
-                                        logger_instance.warning(f"PIL failed to read image for Row {row_id}: {pil_error}, skipping")
-                                        continue
-
-                                    img = Image(image_path)
-
-                                    img_height_pixels = img.height if hasattr(img, 'height') else 0
-                                    img_width_pixels = img.width if hasattr(img, 'width') else 0
-
-                                    # Validate dimensions
-                                    if img_height_pixels <= 0 or img_width_pixels <= 0:
-                                        logger_instance.warning(f"Invalid image dimensions for Row {row_id}: {img_width_pixels}x{img_height_pixels}, skipping")
-                                    else:
-                                        img_height_points = img_height_pixels * 72 / 96
-
-                                        new_height = max(DEFAULT_ROW_HEIGHT_POINTS, img_height_points)
-                                        ws.row_dimensions[row_num].height = new_height
-
-                                        # Calculate dimensions for centering
-                                        col_width_chars = ws.column_dimensions['A'].width
-                                        if col_width_chars is None:
-                                            col_width_chars = 8.43
-                                        cell_width_pixels = col_width_chars * 7
-                                        cell_height_pixels = points_to_pixels(new_height)
-
-                                        x_offset_pixels = max(0, (cell_width_pixels - img_width_pixels) / 2)
-                                        y_offset_pixels = max(0, (cell_height_pixels - img_height_pixels) / 2)
-
-                                        width_emu = pixels_to_EMU(img_width_pixels)
-                                        height_emu = pixels_to_EMU(img_height_pixels)
-
-                                        # Validate EMU values to prevent XML corruption
-                                        if width_emu <= 0 or height_emu <= 0:
-                                            logger_instance.warning(f"Invalid EMU dimensions for Row {row_id}: {width_emu}x{height_emu}, skipping")
-                                        elif width_emu > 10000000 or height_emu > 10000000:
-                                            logger_instance.warning(f"EMU dimensions too large for Row {row_id}: {width_emu}x{height_emu}, skipping")
-                                        else:
-                                            anchor_row = max(0, row_num - 1)
-                                            # Ensure offsets are within valid range (max ~1000 pixels)
-                                            MAX_OFFSET_EMU = 9525000
-                                            x_offset_emu = max(0, min(pixels_to_EMU(x_offset_pixels), MAX_OFFSET_EMU))
-                                            y_offset_emu = max(0, min(pixels_to_EMU(y_offset_pixels), MAX_OFFSET_EMU))
-
-                                            marker = AnchorMarker(
-                                                col=0, # Column A
-                                                colOff=x_offset_emu,
-                                                row=anchor_row,
-                                                rowOff=y_offset_emu
-                                            )
-                                            img.anchor = OneCellAnchor(_from=marker, ext=XDRPositiveSize2D(width_emu, height_emu))
-
-                                            # CRITICAL: Final validation before adding to worksheet
-                                            final_width = getattr(img, 'width', 0)
-                                            final_height = getattr(img, 'height', 0)
-                                            if final_width <= 0 or final_height <= 0:
-                                                logger_instance.error(f"CRITICAL: Image dimensions became 0 after anchor was set for Row {row_id}: {final_width}x{final_height}")
-                                                logger_instance.warning(f"Skipping image insertion for Row {row_id}")
-                                            else:
-                                                ws.add_image(img)
-
-                                        logger_instance.info(f"Added image for Row {row_id} at Excel row {row_num}, height set to {ws.row_dimensions[row_num].height} points")
-                            except Exception as img_error:
-                                logger_instance.error(f"Failed to insert image for Row {row_id}: {img_error}", exc_info=True)
-                                logger_instance.warning(f"Skipping image insertion for Row {row_id}, writing MSRP only")
-                        else:
-                            logger_instance.warning(f"Image processing failed for Row {row_id}, writing MSRP only")
-                    else:
-                        logger_instance.info(f"No image found for Row {row_id}, writing MSRP only")
-
-                if populate_msrp:
-                    msrp_value = item.get('MSRP', '')
-                    ws.cell(row=row_num, column=column_index_from_string(target_column)).value = msrp_value
-                    logger_instance.info(f"Wrote MSRP '{msrp_value}' for Row {row_id} at {target_column}{row_num}")
-            else:
-                if populate_msrp:
-                    ws.cell(row=row_num, column=column_index_from_string(target_column)).value = ''
-                    logger_instance.info(f"Filled missing row {row_num} (ExcelRowID {row_id}) with empty MSRP")
-
-        if ws.max_row > max_needed_row:
-            logger_instance.info(f"Deleting {ws.max_row - max_needed_row} rows after row {max_needed_row}")
-            ws.delete_rows(max_needed_row + 1, ws.max_row - max_needed_row)
-
-        logger_instance.info("Setting worksheet view to A1")
-        ws.sheet_view.topLeftCell = 'A1'
-
-        # Save to ORIGINAL filename (not the cleaned one) so upload works correctly
-        try:
-            wb.save(original_filename)
-            logger_instance.info(f"MSRP Excel file saved: {original_filename}, size: {os.path.getsize(original_filename)} bytes")
-        finally:
-            wb.close()
-            logger_instance.info(f"Excel workbook closed: {original_filename}")
-
-        # CRITICAL FIX: Fix openpyxl 3.1.5 bug with absolute image paths
-        if not fix_excel_image_paths(original_filename, logger_instance):
-            logger_instance.warning(f"Failed to fix image paths, file may be corrupted")
-
-        # Clean up the temporary cleaned file
-        if cleaned_filename != original_filename and os.path.exists(cleaned_filename):
-            try:
-                os.remove(cleaned_filename)
-                logger_instance.info(f"Removed temporary cleaned file: {cleaned_filename}")
-            except:
-                pass
-
-        # Validate the saved file
-        if not validate_excel_file(original_filename, logger_instance):
-            logger_instance.error(f"Excel file failed validation after save: {original_filename}")
-            raise ValueError(f"Generated Excel file is corrupted: {original_filename}")
-    except Exception as e:
-        logger_instance.error(f"Error writing to MSRP Excel file: {e}", exc_info=True)
-        raise
-
-def _write_excel_generic_openpyxl(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, row_offset: int, logger_instance: logging.Logger, file_type_id: Optional[int] = None):
-    try:
-        # Clean the file (mark external links as broken to preserve formulas)
-        logger_instance.info("Cleaning file (marking external links as broken)...")
-        original_filename = local_filename
-        cleaned_filename = clean_template_file(local_filename, logger_instance, mark_broken=True)
-
-        # Load the workbook
-        wb = load_workbook(cleaned_filename)
-        ws = wb.active
-
-        # CRITICAL FIX: Clear ALL existing images to prevent TwoCellAnchor/OneCellAnchor conflicts
-        # This prevents drawing XML corruption when mixing anchor types
-        if hasattr(ws, '_images') and ws._images:
-            existing_count = len(ws._images)
-            ws._images = []
-            logger_instance.info(f"Cleared {existing_count} existing images from template to prevent anchor conflicts")
-
-        temp_path = Path(temp_dir)
-        image_map = {}
-        for path_obj in temp_path.iterdir():
-            if not path_obj.is_file():
-                continue
-            stem = path_obj.stem
-            if stem.isdigit():
-                image_map[int(stem)] = path_obj
-
-        row_ids_from_data = set()
-        for item in image_data:
-            value = item.get('ExcelRowID')
-            if value is None:
-                continue
-            try:
-                row_ids_from_data.add(int(value))
-            except (ValueError, TypeError):
-                logger_instance.warning(f"Skipping invalid ExcelRowID '{value}' in generic writer")
-
-        all_row_ids = sorted(row_ids_from_data.union(image_map.keys()))
-
-        if not all_row_ids:
-            logger_instance.info("No rows found to write for generic template.")
-            return
-
-        min_row_id = all_row_ids[0]
-        max_row_id = all_row_ids[-1]
-
-        template_row_dim = ws.row_dimensions.get(header_row + 1)
-        default_row_height = template_row_dim.height if template_row_dim and template_row_dim.height is not None else 12.75
-
-        header_excel_row = max(header_row, 0) + 1
-        use_absolute_row_ids = min_row_id > header_excel_row
-        if use_absolute_row_ids:
-            logger_instance.info(
-                f"Detected absolute ExcelRowID values (min_row_id={min_row_id}, header_excel_row={header_excel_row})."
-            )
-        else:
-            logger_instance.info(
-                f"Using relative ExcelRowID mapping (min_row_id={min_row_id}, header_excel_row={header_excel_row})."
-            )
-
-        row_num_map: Dict[int, int] = {}
-        total_columns = max(ws.max_column, 1)
-        relative_base_row = header_row + row_offset + 2
-        for row_id in all_row_ids:
-            if use_absolute_row_ids:
-                row_num = row_id + row_offset
-            else:
-                row_num = relative_base_row + (row_id - min_row_id)
-
-            if row_num < 1:
-                logger_instance.error(
-                    f"Computed row {row_num} is invalid for row_id={row_id}, header_row={header_row}, row_offset={row_offset}. Skipping."
-                )
-                continue
-            row_num_map[row_id] = row_num
-
-        if not row_num_map:
-            logger_instance.warning("No valid row mappings computed for generic template. Nothing to write.")
-            return
-
-        max_needed_row = max(row_num_map.values())
-        if ws.max_row < max_needed_row:
-            for _ in range(ws.max_row + 1, max_needed_row + 1):
-                ws.append([''] * total_columns)
-
-        for row_id in all_row_ids:
-            row_num = row_num_map.get(row_id)
-            if row_num is None:
-                continue
-
-            image_path_obj = image_map.get(row_id)
-            if not image_path_obj:
-                continue
-
-            image_path = str(image_path_obj)
-            if verify_and_process_image(image_path, logger_instance):
-                try:
-                    # Validate image file before inserting
-                    if not os.path.exists(image_path) or os.path.getsize(image_path) < MIN_IMAGE_SIZE:
-                        logger_instance.warning(f"Image file invalid after processing for ExcelRowID {row_id}, skipping")
-                    else:
-                        # CRITICAL: Validate PIL can read the image BEFORE creating openpyxl Image
-                        try:
-                            pil_img = PILImage.open(image_path)
-                            pil_width, pil_height = pil_img.size
-                            pil_img.close()
-                            if pil_width <= 0 or pil_height <= 0:
-                                logger_instance.warning(f"PIL image has invalid dimensions for ExcelRowID {row_id}: {pil_width}x{pil_height}, skipping")
-                                continue
-                        except Exception as pil_error:
-                            logger_instance.warning(f"PIL failed to read image for ExcelRowID {row_id}: {pil_error}, skipping")
-                            continue
-
-                        img = Image(image_path)
-
-                        img_height_pixels = getattr(img, 'height', 0)
-                        img_width_pixels = getattr(img, 'width', 0)
-
-                        # Validate dimensions
-                        if img_height_pixels <= 0 or img_width_pixels <= 0:
-                            logger_instance.warning(f"Invalid image dimensions for ExcelRowID {row_id}: {img_width_pixels}x{img_height_pixels}, skipping")
-                        else:
-                            img_height_points = img_height_pixels * 72 / 96
-                            current_height = ws.row_dimensions[row_num].height
-                            new_height = max(img_height_points, current_height or default_row_height)
-                            ws.row_dimensions[row_num].height = new_height
-
-                            # Calculate dimensions for centering
-                            col_width_chars = ws.column_dimensions['A'].width
-                            if col_width_chars is None:
-                                col_width_chars = 8.43
-                            cell_width_pixels = col_width_chars * 7
-                            cell_height_pixels = points_to_pixels(new_height)
-
-                            x_offset_pixels = max(0, (cell_width_pixels - img_width_pixels) / 2)
-                            y_offset_pixels = max(0, (cell_height_pixels - img_height_pixels) / 2)
-
-                            width_emu = pixels_to_EMU(img_width_pixels)
-                            height_emu = pixels_to_EMU(img_height_pixels)
-
-                            # Validate EMU values to prevent XML corruption
-                            if width_emu <= 0 or height_emu <= 0:
-                                logger_instance.warning(f"Invalid EMU dimensions for ExcelRowID {row_id}: {width_emu}x{height_emu}, skipping")
-                            elif width_emu > 10000000 or height_emu > 10000000:
-                                logger_instance.warning(f"EMU dimensions too large for ExcelRowID {row_id}: {width_emu}x{height_emu}, skipping")
-                            else:
-                                anchor_row = max(0, row_num - 1)
-                                # Ensure offsets are within valid range (max ~1000 pixels)
-                                MAX_OFFSET_EMU = 9525000
-                                x_offset_emu = max(0, min(pixels_to_EMU(x_offset_pixels), MAX_OFFSET_EMU))
-                                y_offset_emu = max(0, min(pixels_to_EMU(y_offset_pixels), MAX_OFFSET_EMU))
-
-                                marker = AnchorMarker(
-                                    col=0, # Column A
-                                    colOff=x_offset_emu,
-                                    row=anchor_row,
-                                    rowOff=y_offset_emu
-                                )
-                                img.anchor = OneCellAnchor(_from=marker, ext=XDRPositiveSize2D(width_emu, height_emu))
-
-                                # CRITICAL: Final validation before adding to worksheet
-                                final_width = getattr(img, 'width', 0)
-                                final_height = getattr(img, 'height', 0)
-                                if final_width <= 0 or final_height <= 0:
-                                    logger_instance.error(f"CRITICAL: Image dimensions became 0 after anchor was set for ExcelRowID {row_id}: {final_width}x{final_height}")
-                                    logger_instance.warning(f"Skipping image insertion for ExcelRowID {row_id}")
-                                else:
-                                    ws.add_image(img)
-
-                            logger_instance.info(
-                                f"Added image for ExcelRowID {row_id} at Excel row {row_num} (absolute_mapping={use_absolute_row_ids})"
-                            )
-                except Exception as img_error:
-                    logger_instance.error(f"Failed to insert image for ExcelRowID {row_id}: {img_error}", exc_info=True)
-                    logger_instance.warning(f"Skipping image insertion for ExcelRowID {row_id}")
-            else:
-                logger_instance.warning(f"Image verification failed for ExcelRowID {row_id} at path {image_path}")
-
-        logger_instance.info("Setting worksheet view to A1")
-        ws.sheet_view.topLeftCell = 'A1'
-
-        # Save to ORIGINAL filename (not the cleaned one) so upload works correctly
-        try:
-            wb.save(original_filename)
-            logger_instance.info(f"Generic Excel file saved: {original_filename}, size: {os.path.getsize(original_filename)} bytes")
-        finally:
-            wb.close()
-            logger_instance.info(f"Excel workbook closed: {original_filename}")
-
-        # CRITICAL FIX: Fix openpyxl 3.1.5 bug with absolute image paths
-        if not fix_excel_image_paths(original_filename, logger_instance):
-            logger_instance.warning(f"Failed to fix image paths, file may be corrupted")
-
-        # Clean up the temporary cleaned file
-        if cleaned_filename != original_filename and os.path.exists(cleaned_filename):
-            try:
-                os.remove(cleaned_filename)
-                logger_instance.info(f"Removed temporary cleaned file: {cleaned_filename}")
-            except:
-                pass
-
-        # Validate the saved file
-        if not validate_excel_file(original_filename, logger_instance):
-            logger_instance.error(f"Excel file failed validation after save: {original_filename}")
-            raise ValueError(f"Generated Excel file is corrupted: {original_filename}")
-    except Exception as e:
-        logger_instance.error(f"Error writing to generic Excel file: {e}", exc_info=True)
-        raise
 
 
 def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, logger_instance: logging.Logger, row_offset: int = 0):
-    if not USE_EXCELJS:
-        logger_instance.info("USE_EXCELJS=false, using legacy openpyxl DISTRO writer")
-        return _write_excel_distro_openpyxl(local_filename, temp_dir, image_data, header_row, logger_instance, row_offset)
-
     try:
         logger_instance.info("=== Starting write_excel_distro (ExcelJS) ===")
         logger_instance.info(f"Template file: {local_filename}, size: {os.path.getsize(local_filename)} bytes")
@@ -1688,20 +950,6 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
 
 
 def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, target_column: str, row_offset: int, logger_instance: logging.Logger, populate_images: bool = True, populate_msrp: bool = True):
-    if not USE_EXCELJS:
-        logger_instance.info("USE_EXCELJS=false, using legacy openpyxl MSRP writer")
-        return _write_excel_msrp_openpyxl(
-            local_filename,
-            temp_dir,
-            image_data,
-            header_row,
-            target_column,
-            row_offset,
-            logger_instance,
-            populate_images=populate_images,
-            populate_msrp=populate_msrp,
-        )
-
     try:
         logger_instance.info("=== Starting write_excel_msrp (ExcelJS) ===")
         logger_instance.info("Cleaning file (marking external links as broken)...")
@@ -1747,10 +995,6 @@ def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict],
 
 
 def write_excel_generic(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, row_offset: int, logger_instance: logging.Logger, file_type_id: Optional[int] = None):
-    if not USE_EXCELJS:
-        logger_instance.info("USE_EXCELJS=false, using legacy openpyxl generic writer")
-        return _write_excel_generic_openpyxl(local_filename, temp_dir, image_data, header_row, row_offset, logger_instance, file_type_id=file_type_id)
-
     try:
         logger_instance.info("=== Starting write_excel_generic (ExcelJS) ===")
         logger_instance.info("Cleaning file (marking external links as broken)...")

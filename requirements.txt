@@ -1,7 +1,6 @@
 fastapi
 asyncio
 requests
-openpyxl
 xlsxwriter
 uvicorn
 Pillow
