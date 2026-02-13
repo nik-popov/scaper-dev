@@ -55,7 +55,7 @@ class ExcelJSBridge:
 
     def _node_command(self) -> list[str]:
         node_cmd = os.environ.get("EXCELJS_NODE_BIN", "node")
-        return [node_cmd, self._script_path]
+        return [node_cmd, "--max-old-space-size=3072", self._script_path]
 
     def _ensure_process(self) -> None:
         needs_ping = False
