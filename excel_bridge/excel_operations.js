@@ -175,6 +175,7 @@ class ExcelBridge {
     let processedCount = 0;
     for (const rowId of dataRowIds) {
       const rowNum = rowIdToRowNum[rowId];
+      const item = rowDataMap[rowId];
 
       const row = worksheet.getRow(rowNum);
       row.height = defaultRowHeight;
@@ -190,6 +191,15 @@ class ExcelBridge {
         } catch (error) {
           console.error(`[writeExcelDistro] Failed to insert image for row ${rowId}: ${error.message}`);
         }
+      }
+
+      // Write metadata (columns B, D, E, H)
+      if (rowNum > headerRow + 1) {
+        row.getCell(2).value = item.Brand || '';  // Column B
+        row.getCell(4).value = item.Style || '';  // Column D
+        row.getCell(5).value = item.Color || '';  // Column E
+        row.getCell(8).value = item.Category || ''; // Column H
+        console.error(`[writeExcelDistro] Wrote metadata for row ${rowId} at Excel row ${rowNum}`);
       }
 
       processedCount++;
