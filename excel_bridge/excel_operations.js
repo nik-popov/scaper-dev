@@ -450,14 +450,16 @@ class ExcelBridge {
       `offsets=(${xOffsetPixels.toFixed(1)}, ${yOffsetPixels.toFixed(1)})px`
     );
 
-    // Read image file
-    const imageBuffer = await fs.readFile(imagePath);
-    const extension = path.extname(imagePath).substring(1).toLowerCase();
+    // Resize image to display size with sharp before embedding (saves huge memory on large batches)
+    const resizedBuffer = await sharp(imagePath)
+      .resize(finalWidth, finalHeight, { fit: 'inside' })
+      .jpeg({ quality: 85 })
+      .toBuffer();
 
-    // Add image to workbook
+    // Add resized image to workbook
     const imageId = workbook.addImage({
-      buffer: imageBuffer,
-      extension: extension === 'jpg' ? 'jpeg' : extension
+      buffer: resizedBuffer,
+      extension: 'jpeg'
     });
 
     // ExcelJS ext expects PIXELS (it multiplies by 9525 internally)
