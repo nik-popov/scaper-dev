@@ -34,7 +34,8 @@ from functools import partial
 from app_config import engine, conn_str
 from email_utils import send_email, send_message_email
 from s3_utils import upload_file_to_space
-from openpyxl.utils.units import pixels_to_EMU, points_to_pixels
+from excel_repair_utils import repair_excel_file, safe_load_workbook
+from exceljs_bridge import get_excel_bridge
 # --- Global Setup ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -42,6 +43,7 @@ app = FastAPI()
 
 # --- Constants ---
 MAX_THREADS = int(os.environ.get('MAX_THREADS', 10))
+USE_EXCELJS = os.environ.get('USE_EXCELJS', 'true').lower() == 'true'
 VALID_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/bmp', 'image/webp', 'image/avif', 'image/tiff', 'image/x-icon']
 MIN_IMAGE_SIZE = 1000  # Minimum content length in bytes
 MAX_IMAGE_DIMENSION = 130  # For resizing
@@ -668,7 +670,7 @@ def fix_excel_image_paths(excel_file: str, logger_instance: logging.Logger) -> b
         return False
 
 
-def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, logger_instance: logging.Logger, row_offset: int = 0):
+def _write_excel_distro_openpyxl(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, logger_instance: logging.Logger, row_offset: int = 0):
     try:
         logger_instance.info(f"=== Starting write_excel_distro ===")
         logger_instance.info(f"Template file: {local_filename}, size: {os.path.getsize(local_filename)} bytes")
@@ -693,8 +695,8 @@ def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict
 
         logger_instance.info(f"Loading workbook from: {cleaned_filename}")
 
-        # Load the workbook
-        wb = load_workbook(cleaned_filename)
+        # Load the workbook (with automatic repair if corrupted)
+        wb = safe_load_workbook(cleaned_filename, logger=logger_instance)
         logger_instance.info(f"Workbook loaded successfully")
 
         ws = wb.active
@@ -1212,7 +1214,7 @@ def find_header_row_index(excel_file: str, logger_instance: logging.Logger) -> O
             except:
                 pass
 
-def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, target_column: str, row_offset: int, logger_instance: logging.Logger, populate_images: bool = True, populate_msrp: bool = True):
+def _write_excel_msrp_openpyxl(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, target_column: str, row_offset: int, logger_instance: logging.Logger, populate_images: bool = True, populate_msrp: bool = True):
     try:
         # Clean the file (mark external links as broken to preserve formulas)
         logger_instance.info("Cleaning file (marking external links as broken)...")
@@ -1421,7 +1423,7 @@ def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict],
         logger_instance.error(f"Error writing to MSRP Excel file: {e}", exc_info=True)
         raise
 
-def write_excel_generic(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, row_offset: int, logger_instance: logging.Logger, file_type_id: Optional[int] = None):
+def _write_excel_generic_openpyxl(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, row_offset: int, logger_instance: logging.Logger, file_type_id: Optional[int] = None):
     try:
         # Clean the file (mark external links as broken to preserve formulas)
         logger_instance.info("Cleaning file (marking external links as broken)...")
@@ -1628,6 +1630,166 @@ def write_excel_generic(local_filename: str, temp_dir: str, image_data: List[Dic
             raise ValueError(f"Generated Excel file is corrupted: {original_filename}")
     except Exception as e:
         logger_instance.error(f"Error writing to generic Excel file: {e}", exc_info=True)
+        raise
+
+
+def write_excel_distro(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, logger_instance: logging.Logger, row_offset: int = 0):
+    if not USE_EXCELJS:
+        logger_instance.info("USE_EXCELJS=false, using legacy openpyxl DISTRO writer")
+        return _write_excel_distro_openpyxl(local_filename, temp_dir, image_data, header_row, logger_instance, row_offset)
+
+    try:
+        logger_instance.info("=== Starting write_excel_distro (ExcelJS) ===")
+        logger_instance.info(f"Template file: {local_filename}, size: {os.path.getsize(local_filename)} bytes")
+        logger_instance.info("Cleaning template file (marking external links as broken)...")
+
+        original_filename = local_filename
+        cleaned_filename = clean_template_file(local_filename, logger_instance, mark_broken=True)
+        logger_instance.info(f"Using cleaned template: {cleaned_filename}")
+
+        logger_instance.info("Validating template file before processing...")
+        if not validate_excel_file(cleaned_filename, logger_instance):
+            logger_instance.warning("Template file has validation warnings, but proceeding...")
+
+        header_row = int(header_row)
+        if header_row < 0:
+            logger_instance.error(f"Invalid header_row {header_row}. Setting to 0.")
+            header_row = 0
+        if row_offset < 0:
+            logger_instance.warning(f"Negative row_offset {row_offset} provided. Ensure this is intentional.")
+
+        bridge = get_excel_bridge(logger_instance)
+        result = bridge.write_excel_distro(
+            template_path=cleaned_filename,
+            temp_dir=temp_dir,
+            image_data=image_data,
+            header_row=header_row,
+            row_offset=row_offset,
+        )
+        logger_instance.info(f"ExcelJS DISTRO result: {result}")
+
+        shutil.copyfile(cleaned_filename, original_filename)
+        logger_instance.info(f"DISTRO Excel file saved: {original_filename}, size: {os.path.getsize(original_filename)} bytes")
+
+        if cleaned_filename != original_filename and os.path.exists(cleaned_filename):
+            try:
+                os.remove(cleaned_filename)
+                logger_instance.info(f"Removed temporary cleaned file: {cleaned_filename}")
+            except Exception:
+                pass
+
+        logger_instance.info("Validating saved Excel file...")
+        if not validate_excel_file(original_filename, logger_instance):
+            logger_instance.error(f"Excel file failed validation after save: {original_filename}")
+            raise ValueError(f"Generated Excel file is corrupted: {original_filename}")
+    except Exception:
+        logger_instance.error("Error writing to DISTRO Excel file with ExcelJS", exc_info=True)
+        raise
+
+
+def write_excel_msrp(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, target_column: str, row_offset: int, logger_instance: logging.Logger, populate_images: bool = True, populate_msrp: bool = True):
+    if not USE_EXCELJS:
+        logger_instance.info("USE_EXCELJS=false, using legacy openpyxl MSRP writer")
+        return _write_excel_msrp_openpyxl(
+            local_filename,
+            temp_dir,
+            image_data,
+            header_row,
+            target_column,
+            row_offset,
+            logger_instance,
+            populate_images=populate_images,
+            populate_msrp=populate_msrp,
+        )
+
+    try:
+        logger_instance.info("=== Starting write_excel_msrp (ExcelJS) ===")
+        logger_instance.info("Cleaning file (marking external links as broken)...")
+        original_filename = local_filename
+        cleaned_filename = clean_template_file(local_filename, logger_instance, mark_broken=True)
+
+        header_row = int(header_row)
+        if header_row < 0:
+            logger_instance.error(f"Invalid header_row {header_row}. Setting to 0.")
+            header_row = 0
+        if row_offset < 0:
+            logger_instance.warning(f"Negative row_offset {row_offset} provided. Ensure this is intentional.")
+
+        bridge = get_excel_bridge(logger_instance)
+        result = bridge.write_excel_msrp(
+            template_path=cleaned_filename,
+            temp_dir=temp_dir,
+            image_data=image_data,
+            header_row=header_row,
+            target_column=target_column,
+            row_offset=row_offset,
+            populate_images=populate_images,
+            populate_msrp=populate_msrp,
+        )
+        logger_instance.info(f"ExcelJS MSRP result: {result}")
+
+        shutil.copyfile(cleaned_filename, original_filename)
+        logger_instance.info(f"MSRP Excel file saved: {original_filename}, size: {os.path.getsize(original_filename)} bytes")
+
+        if cleaned_filename != original_filename and os.path.exists(cleaned_filename):
+            try:
+                os.remove(cleaned_filename)
+                logger_instance.info(f"Removed temporary cleaned file: {cleaned_filename}")
+            except Exception:
+                pass
+
+        if not validate_excel_file(original_filename, logger_instance):
+            logger_instance.error(f"Excel file failed validation after save: {original_filename}")
+            raise ValueError(f"Generated Excel file is corrupted: {original_filename}")
+    except Exception:
+        logger_instance.error("Error writing to MSRP Excel file with ExcelJS", exc_info=True)
+        raise
+
+
+def write_excel_generic(local_filename: str, temp_dir: str, image_data: List[Dict], header_row: int, row_offset: int, logger_instance: logging.Logger, file_type_id: Optional[int] = None):
+    if not USE_EXCELJS:
+        logger_instance.info("USE_EXCELJS=false, using legacy openpyxl generic writer")
+        return _write_excel_generic_openpyxl(local_filename, temp_dir, image_data, header_row, row_offset, logger_instance, file_type_id=file_type_id)
+
+    try:
+        logger_instance.info("=== Starting write_excel_generic (ExcelJS) ===")
+        logger_instance.info("Cleaning file (marking external links as broken)...")
+        original_filename = local_filename
+        cleaned_filename = clean_template_file(local_filename, logger_instance, mark_broken=True)
+
+        header_row = int(header_row)
+        if header_row < 0:
+            logger_instance.error(f"Invalid header_row {header_row}. Setting to 0.")
+            header_row = 0
+        if row_offset < 0:
+            logger_instance.warning(f"Negative row_offset {row_offset} provided. Ensure this is intentional.")
+
+        bridge = get_excel_bridge(logger_instance)
+        result = bridge.write_excel_generic(
+            template_path=cleaned_filename,
+            temp_dir=temp_dir,
+            image_data=image_data,
+            header_row=header_row,
+            row_offset=row_offset,
+            file_type_id=file_type_id,
+        )
+        logger_instance.info(f"ExcelJS generic result: {result}")
+
+        shutil.copyfile(cleaned_filename, original_filename)
+        logger_instance.info(f"Generic Excel file saved: {original_filename}, size: {os.path.getsize(original_filename)} bytes")
+
+        if cleaned_filename != original_filename and os.path.exists(cleaned_filename):
+            try:
+                os.remove(cleaned_filename)
+                logger_instance.info(f"Removed temporary cleaned file: {cleaned_filename}")
+            except Exception:
+                pass
+
+        if not validate_excel_file(original_filename, logger_instance):
+            logger_instance.error(f"Excel file failed validation after save: {original_filename}")
+            raise ValueError(f"Generated Excel file is corrupted: {original_filename}")
+    except Exception:
+        logger_instance.error("Error writing to generic Excel file with ExcelJS", exc_info=True)
         raise
 
 # --- Main Background Task ---
@@ -1871,6 +2033,66 @@ async def generate_msrp_excel(file_id: str, target_column: str, row_offset: int 
             await cleanup_temp_dirs([temp_images_dir, temp_excel_dir])
 
 # --- FastAPI Endpoints ---
+@app.post("/reformatExcel")
+async def reformat_excel(file_url: str):
+    """
+    Endpoint to repair corrupted Excel files with external link issues.
+    Downloads the file, repairs it, and returns download URLs.
+    """
+    try:
+        file_id = str(uuid4())
+        logger.info(f"Received Excel repair request for URL: {file_url}")
+
+        # Download the file
+        response = requests.get(file_url, timeout=30)
+        response.raise_for_status()
+
+        # Save to temp location
+        temp_dir = Path('temp') / file_id
+        temp_dir.mkdir(parents=True, exist_ok=True)
+
+        input_file = temp_dir / 'input.xlsx'
+        with open(input_file, 'wb') as f:
+            f.write(response.content)
+
+        logger.info(f"Downloaded file to {input_file}")
+
+        # Repair the file
+        repaired_file = repair_excel_file(str(input_file), logger=logger)
+
+        # Upload repaired file to S3/R2
+        s3_url = upload_file_to_space(
+            repaired_file,
+            f"uploads/{file_id}/repaired/repaired_{file_id}.xlsx",
+            space_type='s3'
+        )
+
+        r2_url = upload_file_to_space(
+            repaired_file,
+            f"uploads/{file_id}/repaired/repaired_{file_id}.xlsx",
+            space_type='r2'
+        )
+
+        # Cleanup
+        shutil.rmtree(temp_dir)
+
+        logger.info(f"Excel repair completed. S3: {s3_url}, R2: {r2_url}")
+
+        return {
+            "success": True,
+            "message": "Excel file repaired successfully",
+            "s3_url": s3_url,
+            "r2_url": r2_url,
+            "file_id": file_id
+        }
+
+    except Exception as e:
+        logger.error(f"Error repairing Excel file: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
 @app.post("/generate-download-file/")
 async def process_file(background_tasks: BackgroundTasks, file_id: int, row_offset: Optional[int] = 0):
     logger.info(f"Received request for FileID: {file_id} with row_offset={row_offset}")

@@ -1,0 +1,14 @@
+{
+  "name": "excel-operations-bridge",
+  "version": "1.0.0",
+  "description": "Node.js bridge for Excel operations using ExcelJS",
+  "main": "excel_operations.js",
+  "type": "module",
+  "dependencies": {
+    "exceljs": "^4.4.0",
+    "sharp": "^0.33.0"
+  },
+  "scripts": {
+    "test": "node test_operations.js"
+  }
+}

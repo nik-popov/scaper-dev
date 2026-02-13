@@ -18,15 +18,24 @@ RUN pip install -r requirements.txt
 # Now copy the rest of the application into the container
 COPY icon_image_lib/ icon_image_lib/
 COPY main.py .
+COPY exceljs_bridge.py .
 COPY app_config.py .
 COPY email_utils.py .
 COPY s3_utils.py .
+COPY excel_bridge/ excel_bridge/
 # Clean the apt cache and update with --fix-missing
 RUN apt-get clean && \
     apt-get update --fix-missing
 
 # Install necessary packages
 RUN apt-get install -y apt-transport-https curl gnupg lsb-release unixodbc unixodbc-dev
+
+# Install Node.js 20.x for ExcelJS bridge
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y nodejs
+
+# Install Node dependencies for the Excel bridge
+RUN cd /app/excel_bridge && npm install --omit=dev
 # Add Microsoft package repository and install msodbcsql17 (modern approach without apt-key)
 RUN curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg && \
     echo "deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/debian/12/prod bookworm main" > /etc/apt/sources.list.d/mssql-release.list && \
