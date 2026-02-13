@@ -164,9 +164,8 @@ class ExcelBridge {
       }
     }
 
-    // Cell dimensions for image positioning
-    const CELL_WIDTH_POINTS = 100;
-    const CELL_HEIGHT_POINTS = Math.max(defaultRowHeight, 150);
+    // Set row height for image rows
+    const IMAGE_ROW_HEIGHT = Math.max(defaultRowHeight, 150);
 
     // Process each data item
     let processedCount = 0;
@@ -175,16 +174,14 @@ class ExcelBridge {
       const item = rowDataMap[rowId];
 
       const row = worksheet.getRow(rowNum);
-      row.height = CELL_HEIGHT_POINTS;
+      row.height = IMAGE_ROW_HEIGHT;
 
       // Insert image if available
       const imagePath = imageMap[rowId];
       if (imagePath) {
         try {
           await this.insertImageWithEMUAnchor(workbook, worksheet, imagePath, rowNum, 0, {
-            cellWidthPoints: CELL_WIDTH_POINTS,
-            cellHeightPoints: CELL_HEIGHT_POINTS,
-            paddingPoints: 5
+            paddingPoints: 3
           });
           console.error(`[writeExcelDistro] Added image for row ${rowId} at Excel row ${rowNum}`);
         } catch (error) {
@@ -320,15 +317,9 @@ class ExcelBridge {
       if (populateImages && rowId in imageMap) {
         const imagePath = path.join(tempDir, imageMap[rowId]);
         try {
-          // Get column A width
-          const colADim = worksheet.getColumn('A');
-          const colWidthChars = colADim.width || 8.43;
-
           // Insert image and get its dimensions
           const { imgHeightPoints } = await this.insertImageWithEMUAnchor(workbook, worksheet, imagePath, rowNum, 0, {
-            cellWidthPoints: colWidthChars,
-            cellHeightPoints: defaultRowHeight,
-            paddingPoints: 0
+            paddingPoints: 2
           });
 
           // Adjust row height if image is taller
@@ -412,14 +403,21 @@ class ExcelBridge {
       throw new Error(`Invalid image dimensions: ${imgWidthPixels}x${imgHeightPixels}`);
     }
 
-    // Calculate cell dimensions in pixels
-    const cellWidthPixels = (options.cellWidthPoints || 100) * 7;  // Excel column width units
-    const cellHeightPixels = pointsToPixels(options.cellHeightPoints || 12.75);
+    // Read actual cell dimensions from the worksheet
+    const col = worksheet.getColumn(colNum + 1); // ExcelJS columns are 1-based
+    const row = worksheet.getRow(rowNum);
+    const colWidthChars = col.width || 8.43;        // Excel character-width units
+    const rowHeightPoints = row.height || 15;        // Points
+
+    // Excel character-width → pixels:  chars * 7 + 5
+    const cellWidthPixels = Math.round(colWidthChars * 7 + 5);
+    // Points → pixels
+    const cellHeightPixels = pointsToPixels(rowHeightPoints);
 
     // Apply padding
-    const padding = options.paddingPoints ? pointsToPixels(options.paddingPoints) : 0;
-    const availWidth = Math.max(1, cellWidthPixels - padding * 2);
-    const availHeight = Math.max(1, cellHeightPixels - padding * 2);
+    const paddingPx = options.paddingPoints ? pointsToPixels(options.paddingPoints) : 4;
+    const availWidth = Math.max(1, cellWidthPixels - paddingPx * 2);
+    const availHeight = Math.max(1, cellHeightPixels - paddingPx * 2);
 
     // Scale image to fit within the available cell area (preserve aspect ratio)
     const scaleX = availWidth / imgWidthPixels;
