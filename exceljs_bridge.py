@@ -236,6 +236,10 @@ class ExcelJSBridge:
     def ping(self) -> Dict[str, Any]:
         return self._send_request("ping", {}, timeout_seconds=10)
 
+    def _timeout_for_rows(self, row_count: int) -> int:
+        """Scale timeout based on row count: base 120s + 1s per 10 rows."""
+        return max(self._timeout_seconds, 120 + (row_count // 10))
+
     def write_excel_distro(
         self,
         template_path: str,
@@ -253,6 +257,7 @@ class ExcelJSBridge:
                 "headerRow": int(header_row),
                 "rowOffset": int(row_offset),
             },
+            timeout_seconds=self._timeout_for_rows(len(image_data)),
         )
 
     def write_excel_msrp(
@@ -278,6 +283,7 @@ class ExcelJSBridge:
                 "populateImages": bool(populate_images),
                 "populateMSRP": bool(populate_msrp),
             },
+            timeout_seconds=self._timeout_for_rows(len(image_data)),
         )
 
     def write_excel_generic(
@@ -299,6 +305,7 @@ class ExcelJSBridge:
                 "rowOffset": int(row_offset),
                 "fileTypeId": file_type_id,
             },
+            timeout_seconds=self._timeout_for_rows(len(image_data)),
         )
 
 

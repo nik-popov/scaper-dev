@@ -128,6 +128,13 @@ class ExcelBridge {
     const defaultRowHeight = templateRow.height || 12.75;
     console.error(`[writeExcelDistro] Using template row height: ${defaultRowHeight} points`);
 
+    // Ensure column A is wide enough for images (at least 18 chars ≈ 131px)
+    const colA = worksheet.getColumn('A');
+    if (!colA.width || colA.width < 18) {
+      colA.width = 18;
+      console.error(`[writeExcelDistro] Set column A width to 18 chars for images`);
+    }
+
     // Build row mapping
     const rowDataMap = {};
     imageData.forEach(item => {
