@@ -432,30 +432,15 @@ class ExcelBridge {
     const xOffsetPixels = Math.max(0, (cellWidthPixels - finalWidth) / 2);
     const yOffsetPixels = Math.max(0, (cellHeightPixels - finalHeight) / 2);
 
-    // Convert to EMU
-    const widthEMU = pixelsToEMU(finalWidth);
-    const heightEMU = pixelsToEMU(finalHeight);
-    let xOffsetEMU = pixelsToEMU(xOffsetPixels);
-    let yOffsetEMU = pixelsToEMU(yOffsetPixels);
-
-    // Validate EMU values
-    if (widthEMU <= 0 || heightEMU <= 0) {
-      throw new Error(`Invalid EMU dimensions: ${widthEMU}x${heightEMU}`);
-    }
-    if (widthEMU > 10000000 || heightEMU > 10000000) {
-      throw new Error(`EMU dimensions too large: ${widthEMU}x${heightEMU}`);
-    }
-
-    // Clamp offsets
-    xOffsetEMU = Math.max(0, Math.min(xOffsetEMU, MAX_OFFSET_EMU));
-    yOffsetEMU = Math.max(0, Math.min(yOffsetEMU, MAX_OFFSET_EMU));
+    // Convert offsets to EMU for nativeColOff / nativeRowOff
+    const xOffsetEMU = Math.round(xOffsetPixels * EMU_PER_PIXEL);
+    const yOffsetEMU = Math.round(yOffsetPixels * EMU_PER_PIXEL);
 
     console.error(
       `[insertImage] Row ${rowNum}: img=${imgWidthPixels}x${imgHeightPixels}px, ` +
       `scaled=${finalWidth}x${finalHeight}px (${(scale * 100).toFixed(0)}%), ` +
       `cell=${Math.round(cellWidthPixels)}x${Math.round(cellHeightPixels)}px, ` +
-      `offsets=(${xOffsetPixels.toFixed(1)}, ${yOffsetPixels.toFixed(1)})px, ` +
-      `size=${widthEMU}x${heightEMU}EMU`
+      `offsets=(${xOffsetPixels.toFixed(1)}, ${yOffsetPixels.toFixed(1)})px`
     );
 
     // Read image file
@@ -468,20 +453,20 @@ class ExcelBridge {
       extension: extension === 'jpg' ? 'jpeg' : extension
     });
 
-    // Add image to worksheet with OneCellAnchor-style positioning
-    // In ExcelJS, rows are 0-indexed internally
+    // ExcelJS ext expects PIXELS (it multiplies by 9525 internally)
+    // ExcelJS tl with col/row ignores colOff/rowOff — use nativeCol/nativeColOff for EMU offsets
     worksheet.addImage(imageId, {
       tl: {
-        col: colNum,
-        row: rowNum - 1,  // ExcelJS uses 0-based row indexing
-        colOff: xOffsetEMU,
-        rowOff: yOffsetEMU
+        nativeCol: colNum,
+        nativeColOff: xOffsetEMU,
+        nativeRow: rowNum - 1,
+        nativeRowOff: yOffsetEMU
       },
       ext: {
-        width: widthEMU,
-        height: heightEMU
+        width: finalWidth,
+        height: finalHeight
       },
-      editAs: 'oneCell'  // Matches OneCellAnchor behavior
+      editAs: 'oneCell'
     });
 
     return { imgHeightPoints };
