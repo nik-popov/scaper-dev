@@ -412,20 +412,31 @@ class ExcelBridge {
       throw new Error(`Invalid image dimensions: ${imgWidthPixels}x${imgHeightPixels}`);
     }
 
-    // Convert dimensions
-    const imgHeightPoints = imgHeightPixels * POINTS_PER_INCH / DPI;
-
     // Calculate cell dimensions in pixels
     const cellWidthPixels = (options.cellWidthPoints || 100) * 7;  // Excel column width units
     const cellHeightPixels = pointsToPixels(options.cellHeightPoints || 12.75);
 
+    // Apply padding
+    const padding = options.paddingPoints ? pointsToPixels(options.paddingPoints) : 0;
+    const availWidth = Math.max(1, cellWidthPixels - padding * 2);
+    const availHeight = Math.max(1, cellHeightPixels - padding * 2);
+
+    // Scale image to fit within the available cell area (preserve aspect ratio)
+    const scaleX = availWidth / imgWidthPixels;
+    const scaleY = availHeight / imgHeightPixels;
+    const scale = Math.min(scaleX, scaleY, 1);  // never upscale
+
+    const finalWidth = Math.round(imgWidthPixels * scale);
+    const finalHeight = Math.round(imgHeightPixels * scale);
+    const imgHeightPoints = finalHeight * POINTS_PER_INCH / DPI;
+
     // Calculate centering offsets in pixels
-    const xOffsetPixels = Math.max(0, (cellWidthPixels - imgWidthPixels) / 2);
-    const yOffsetPixels = Math.max(0, (cellHeightPixels - imgHeightPixels) / 2);
+    const xOffsetPixels = Math.max(0, (cellWidthPixels - finalWidth) / 2);
+    const yOffsetPixels = Math.max(0, (cellHeightPixels - finalHeight) / 2);
 
     // Convert to EMU
-    const widthEMU = pixelsToEMU(imgWidthPixels);
-    const heightEMU = pixelsToEMU(imgHeightPixels);
+    const widthEMU = pixelsToEMU(finalWidth);
+    const heightEMU = pixelsToEMU(finalHeight);
     let xOffsetEMU = pixelsToEMU(xOffsetPixels);
     let yOffsetEMU = pixelsToEMU(yOffsetPixels);
 
@@ -443,7 +454,9 @@ class ExcelBridge {
 
     console.error(
       `[insertImage] Row ${rowNum}: img=${imgWidthPixels}x${imgHeightPixels}px, ` +
-      `offsets=(${xOffsetPixels.toFixed(1)}, ${yOffsetPixels.toFixed(1)})px = (${xOffsetEMU}, ${yOffsetEMU})EMU, ` +
+      `scaled=${finalWidth}x${finalHeight}px (${(scale * 100).toFixed(0)}%), ` +
+      `cell=${Math.round(cellWidthPixels)}x${Math.round(cellHeightPixels)}px, ` +
+      `offsets=(${xOffsetPixels.toFixed(1)}, ${yOffsetPixels.toFixed(1)})px, ` +
       `size=${widthEMU}x${heightEMU}EMU`
     );
 
