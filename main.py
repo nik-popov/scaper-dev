@@ -1108,6 +1108,7 @@ async def generate_download_file(file_id: str, row_offset: int = 0):
                 )
             template_row_offset = 0
 
+            os.makedirs(temp_excel_dir, exist_ok=True)
             res = requests.get(template_url, timeout=60)
             res.raise_for_status()
             with open(local_filename, "wb") as f:
@@ -1118,6 +1119,7 @@ async def generate_download_file(file_id: str, row_offset: int = 0):
             file_name = os.path.basename(urllib.parse.unquote(file_url))
             local_filename = os.path.join(temp_excel_dir, file_name)
 
+            os.makedirs(temp_excel_dir, exist_ok=True)
             res = requests.get(file_url, timeout=60)
             res.raise_for_status()
             with open(local_filename, "wb") as f:
