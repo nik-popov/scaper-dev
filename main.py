@@ -1045,8 +1045,9 @@ async def generate_download_file(file_id: str, row_offset: int = 0):
 
     try:
         user_agents = get_user_agents(logger_instance)
-        temp_images_dir, temp_excel_dir = await create_temp_dirs(file_id)
-        
+        job_unique_id = f"{file_id}_{timestamp}_{uuid4().hex[:8]}"
+        temp_images_dir, temp_excel_dir = await create_temp_dirs(job_unique_id)
+
         logger_instance.info("Fetching all image data from database...")
         images_df = get_images_excel_db(file_id_int, logger_instance)
         
@@ -1149,7 +1150,6 @@ async def generate_download_file(file_id: str, row_offset: int = 0):
             
         processed_file_name = f"{Path(original_file_name).stem}_ptype-{file_type_id}_{timestamp}.xlsx"
         public_url = await upload_file_to_space(local_filename, save_as=f"processed_files/{processed_file_name}", file_id=file_id_int, is_public=True)
-        update_file_location_complete(file_id_int, public_url, logger_instance)
         await send_email(
             to_emails=user_email or '',
             subject=f'File Processed: {file_name}',
@@ -1173,8 +1173,9 @@ async def generate_msrp_excel(file_id: str, target_column: str, row_offset: int 
 
     try:
         user_agents = get_user_agents(logger_instance)
-        temp_images_dir, temp_excel_dir = await create_temp_dirs(file_id)
-        
+        job_unique_id = f"{file_id}_{timestamp}_{uuid4().hex[:8]}"
+        temp_images_dir, temp_excel_dir = await create_temp_dirs(job_unique_id)
+
         # Determine what to populate based on FileTypeID
         file_type_id = get_file_type_id(file_id_int, logger_instance)
         populate_images = True
@@ -1262,7 +1263,6 @@ async def generate_msrp_excel(file_id: str, target_column: str, row_offset: int 
 
         processed_file_name = f"{Path(file_name).stem}_msrp_{file_type_id}_{timestamp}.xlsx"
         public_url = await upload_file_to_space(local_filename, save_as=f"processed_files/{processed_file_name}", file_id=file_id_int, is_public=True)
-        update_file_location_complete(file_id_int, public_url, logger_instance)
         await send_email(
             to_emails=user_email or 'nik@iconluxurygroup.com',
             subject=f'MSRP File Processed: {file_name}',
