@@ -151,11 +151,6 @@ def get_images_excel_db(file_id: int, logger_instance: logging.Logger) -> pd.Dat
     Retrieve detailed image and product data for Excel processing.
     Includes all rows, even those without image results, using LEFT JOIN.
     """
-    with pyodbc.connect(conn_str) as connection:
-        cursor = connection.cursor()
-        cursor.execute("UPDATE utb_ImageScraperFiles SET CreateFileStartTime = GETDATE() WHERE ID = ?", (file_id,))
-        connection.commit()
-    
     query = """
         SELECT
             s.ExcelRowID, r.ImageUrl, r.ImageUrlThumbnail, r.SortOrder,
@@ -1342,12 +1337,44 @@ async def reformat_excel(file_url: str):
 @app.post("/generate-download-file/")
 async def process_file(background_tasks: BackgroundTasks, file_id: int, row_offset: Optional[int] = 0):
     logger.info(f"Received request for FileID: {file_id} with row_offset={row_offset}")
+    with pyodbc.connect(conn_str) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE utb_ImageScraperFiles
+            SET CreateFileStartTime = GETDATE(), CreateFileCompleteTime = NULL
+            WHERE ID = ?
+            AND (
+                CreateFileStartTime IS NULL
+                OR CreateFileCompleteTime IS NOT NULL
+                OR DATEDIFF(MINUTE, CreateFileStartTime, GETDATE()) > 10
+            )
+        """, (file_id,))
+        conn.commit()
+        if cursor.rowcount == 0:
+            logger.warning(f"FileID {file_id} is already being processed. Skipping.")
+            return {"message": "File is already being processed."}
     background_tasks.add_task(generate_download_file, str(file_id), row_offset)
     return {"message": "Processing started. You will be notified upon completion."}
 
 @app.post("/generate-msrp-excel/")
 async def process_msrp_file(background_tasks: BackgroundTasks, file_id: int, target_column: str, row_offset: Optional[int] = 0):
     logger.info(f"Received request for MSRP FileID: {file_id} with target_column={target_column} and row_offset={row_offset}")
+    with pyodbc.connect(conn_str) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE utb_ImageScraperFiles
+            SET CreateFileStartTime = GETDATE(), CreateFileCompleteTime = NULL
+            WHERE ID = ?
+            AND (
+                CreateFileStartTime IS NULL
+                OR CreateFileCompleteTime IS NOT NULL
+                OR DATEDIFF(MINUTE, CreateFileStartTime, GETDATE()) > 10
+            )
+        """, (file_id,))
+        conn.commit()
+        if cursor.rowcount == 0:
+            logger.warning(f"MSRP FileID {file_id} is already being processed. Skipping.")
+            return {"message": "File is already being processed."}
     background_tasks.add_task(generate_msrp_excel, str(file_id), target_column, row_offset)
     return {"message": "MSRP Processing started. You will be notified upon completion."}
 
