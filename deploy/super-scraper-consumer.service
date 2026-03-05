@@ -10,6 +10,18 @@ Type=oneshot
 RemainAfterExit=yes
 TimeoutStartSec=120
 
+# Wait for RabbitMQ to be ready (up to 60s)
+ExecStartPre=/bin/bash -c '\
+    echo "Waiting for RabbitMQ to be ready..." && \
+    for i in $(seq 1 30); do \
+        (echo > /dev/tcp/localhost/5672) 2>/dev/null && \
+            echo "RabbitMQ is accepting connections" && exit 0; \
+        echo "Attempt $i/30: RabbitMQ not ready, retrying in 2s..."; \
+        sleep 2; \
+    done; \
+    echo "WARNING: RabbitMQ not reachable after 60s, starting consumer anyway"; \
+    exit 0'
+
 # Stop and remove any existing consumer container
 ExecStartPre=-/usr/bin/docker stop super-scraper-consumer
 ExecStartPre=-/usr/bin/docker rm super-scraper-consumer

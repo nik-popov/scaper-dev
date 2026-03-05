@@ -14,8 +14,8 @@ ExecStart=/bin/bash -c '\
     LATEST=$$(docker image inspect --format="{{.Id}}" "$IMAGE" 2>/dev/null) && \
     if [ "$$RUNNING" != "$$LATEST" ]; then \
         echo "New image detected, restarting super-scraper and consumer..." && \
-        systemctl restart super-scraper-consumer.service && \
-        systemctl restart super-scraper.service; \
+        systemctl restart super-scraper.service && \
+        systemctl restart super-scraper-consumer.service; \
     else \
         echo "Already running latest image, no restart needed."; \
     fi'
