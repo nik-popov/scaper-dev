@@ -903,8 +903,8 @@ async def process_restart_batch(
             "last_entry_id_processed": str(entry_id or ""),
         }
 
-    BATCH_SIZE_PER_GATHER = max(1, min(20, num_workers * 2))
-    MAX_CONCURRENT_ENTRY_PROCESSING = max(num_workers, 5)
+    BATCH_SIZE_PER_GATHER = max(100, num_workers * 10)
+    MAX_CONCURRENT_ENTRY_PROCESSING = max(100, num_workers * 5)
     MAX_ENTRY_ATTEMPTS = 1
     configured_search_endpoint = ROAMINGPROXY_API_URL
 
@@ -1687,7 +1687,7 @@ async def api_process_restart_job(
     background_tasks: BackgroundTasks, 
     entry_id: Optional[int] = Query(None),
     use_all_variations: bool = Query(False),
-num_workers_hint: int = Query(8, ge=1, le=100),
+num_workers_hint: int = Query(500, ge=1, le=1000),
 ):
     
     job_run_id = f"restart_job_{file_id}_{entry_id or 'auto'}_{'allvars' if use_all_variations else 'stdvars'}_{num_workers_hint}w"

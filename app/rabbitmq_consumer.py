@@ -74,7 +74,7 @@ class RabbitMQConsumer:
                 self.channel = await self.connection.channel()
                 if not self.channel:
                     raise aio_pika.exceptions.AMQPConnectionError("Failed to create channel")
-                await self.channel.set_qos(prefetch_count=1)
+                await self.channel.set_qos(prefetch_count=10)
 
                 if self.queue_name.startswith("select_response_"):
                     try:

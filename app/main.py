@@ -48,7 +48,7 @@ def main():
                 app,
                 host="0.0.0.0",
                 port=8080,
-                threads=int(os.cpu_count() / 2 + 1),
+                threads=os.cpu_count() * 4,
                 connection_limit=1000,
                 asyncore_loop_timeout=120
             )
@@ -75,7 +75,7 @@ def main():
 
             options = {
                 "bind": "0.0.0.0:8080",
-                "workers": int(os.cpu_count() / 2 + 1),
+                "workers": os.cpu_count() * 2 + 1,
                 "worker_class": "uvicorn.workers.UvicornWorker",
                 "loglevel": "info",
                 "timeout": 600,
