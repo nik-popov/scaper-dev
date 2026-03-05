@@ -18,18 +18,12 @@ RUN apt-get update --fix-missing && \
         libopencv-dev \
         && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Clean the apt cache and update with --fix-missing
-RUN apt-get clean && \
-    apt-get update --fix-missing
-
-# Install necessary packages
-RUN apt-get install -y apt-transport-https curl gnupg lsb-release unixodbc unixodbc-dev
 # Add Microsoft package repository and install msodbcsql17
-RUN curl https://packages.microsoft.com/keys/microsoft.asc | apt-key add - && \
-    curl https://packages.microsoft.com/config/ubuntu/20.04/prod.list > /etc/apt/sources.list.d/mssql-release.list && \
+RUN curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg && \
+    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/debian/12/prod bookworm main" > /etc/apt/sources.list.d/mssql-release.list && \
     apt-get update --fix-missing && \
-    ACCEPT_EULA=Y apt-get install -y msodbcsql17 && \
-    ACCEPT_EULA=Y apt-get install -y mssql-tools
+    ACCEPT_EULA=Y apt-get install -y msodbcsql17 mssql-tools && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Set PATH for mssql-tools
 ENV PATH="/opt/mssql-tools/bin:${PATH}"

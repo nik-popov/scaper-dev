@@ -9,12 +9,12 @@ set -euo pipefail
 #
 # Prerequisites:
 #   - Docker installed and running
-#   - Logged into ghcr.io:
-#     echo $GITHUB_PAT | docker login ghcr.io -u YOUR_USERNAME --password-stdin
+#   - Logged into Docker Hub:
+#     docker login -u nikiconluxury
 # ============================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-IMAGE="ghcr.io/iconluxurygroup/scaper-dev:latest"
+IMAGE="nikiconluxury/scaper-dev:latest"
 
 # Check running as root
 if [ "$EUID" -ne 0 ]; then

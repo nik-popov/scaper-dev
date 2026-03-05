@@ -8,7 +8,7 @@ Type=oneshot
 
 # Pull latest, compare digests, restart app + consumer only if image changed
 ExecStart=/bin/bash -c '\
-    IMAGE="ghcr.io/iconluxurygroup/scaper-dev:latest" && \
+    IMAGE="nikiconluxury/scaper-dev:latest" && \
     docker pull "$IMAGE" && \
     RUNNING=$$(docker inspect --format="{{.Image}}" super-scraper 2>/dev/null) && \
     LATEST=$$(docker image inspect --format="{{.Id}}" "$IMAGE" 2>/dev/null) && \
