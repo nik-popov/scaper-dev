@@ -1,0 +1,18 @@
+services:
+  api:
+    image: nikiconluxury/scaper-dev-api:latest
+    container_name: super-scraper
+    ports:
+      - "8080:8080"
+      - "8265:8265"
+    env_file: ./env
+    restart: unless-stopped
+
+  consumer:
+    image: nikiconluxury/scaper-dev-consumer:latest
+    container_name: super-scraper-consumer
+    network_mode: host
+    env_file: ./env
+    restart: unless-stopped
+    depends_on:
+      - api

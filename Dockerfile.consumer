@@ -1,0 +1,36 @@
+FROM python:3.10-slim
+
+WORKDIR /app
+
+# Minimal system deps: only ODBC drivers needed for pyodbc/aioodbc
+RUN apt-get update --fix-missing && \
+    apt-get install -y --no-install-recommends \
+        apt-transport-https \
+        curl \
+        gnupg \
+        lsb-release \
+        unixodbc \
+        unixodbc-dev \
+        libpq-dev \
+        && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Microsoft MSSQL ODBC driver (required by pyodbc)
+RUN curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg && \
+    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/debian/12/prod bookworm main" > /etc/apt/sources.list.d/mssql-release.list && \
+    apt-get update --fix-missing && \
+    ACCEPT_EULA=Y apt-get install -y msodbcsql17 && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+ENV PATH="/opt/mssql-tools/bin:${PATH}"
+
+RUN pip install --no-cache-dir uv
+
+COPY pyproject.toml uv.lock /app/
+
+# Install only base (consumer) deps — no api extras, no torch/ultralytics/opencv
+RUN uv sync --no-dev
+
+COPY app/ /app/
+
+ENTRYPOINT ["uv", "run"]
+CMD ["python", "rabbitmq_consumer.py"]

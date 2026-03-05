@@ -1,32 +1,18 @@
 [Unit]
-Description=Super Scraper Container
+Description=Super Scraper (Docker Compose)
 After=docker.service network-online.target
 Requires=docker.service
-Wants=network-online.target super-scraper-consumer.service
+Wants=network-online.target
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
 TimeoutStartSec=300
+WorkingDirectory=/etc/super-scraper
 
-# Pull latest image before starting
-ExecStartPre=/usr/bin/docker pull nikiconluxury/scaper-dev:latest
-# Stop and remove any existing container (dash prefix = ignore errors if not running)
-ExecStartPre=-/usr/bin/docker stop super-scraper
-ExecStartPre=-/usr/bin/docker rm super-scraper
-
-# Start the container
-ExecStart=/usr/bin/docker run -d \
-    --name super-scraper \
-    -p 8080:8080 \
-    -p 8265:8265 \
-    --restart unless-stopped \
-    --env-file /etc/super-scraper/env \
-    nikiconluxury/scaper-dev:latest
-
-# Stop the container
-ExecStop=/usr/bin/docker stop super-scraper
-ExecStopPost=-/usr/bin/docker rm super-scraper
+ExecStartPre=/usr/bin/docker compose pull
+ExecStart=/usr/bin/docker compose up -d
+ExecStop=/usr/bin/docker compose down
 
 [Install]
 WantedBy=multi-user.target

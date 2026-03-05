@@ -1,16 +1,23 @@
-name: Build and Push Docker Image
+name: Build and Push Docker Images
 
 on:
   push:
     branches: ['**']
   workflow_dispatch:
 
-env:
-  IMAGE_NAME: nikiconluxury/scaper-dev
-
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        include:
+          - name: api
+            image: nikiconluxury/scaper-dev-api
+            dockerfile: Dockerfile.api
+          - name: consumer
+            image: nikiconluxury/scaper-dev-consumer
+            dockerfile: Dockerfile.consumer
 
     steps:
       - name: Checkout repository
@@ -22,19 +29,20 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Extract metadata
+      - name: Extract metadata (${{ matrix.name }})
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.IMAGE_NAME }}
+          images: ${{ matrix.image }}
           tags: |
             type=sha
             type=raw,value=latest
 
-      - name: Build and push Docker image
+      - name: Build and push ${{ matrix.name }} image
         uses: docker/build-push-action@v6
         with:
           context: .
+          file: ${{ matrix.dockerfile }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

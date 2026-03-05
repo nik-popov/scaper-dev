@@ -1,22 +1,24 @@
 [Unit]
-Description=Pull latest Super Scraper image and restart if changed
+Description=Pull latest Super Scraper images and restart if changed
 After=docker.service network-online.target
 Requires=docker.service
 
 [Service]
 Type=oneshot
 
-# Pull latest, compare digests, restart app + consumer only if image changed
+# Pull both images, compare digests, restart via compose only if either changed
 ExecStart=/bin/bash -c '\
-    IMAGE="nikiconluxury/scaper-dev:latest" && \
-    docker pull "$IMAGE" && \
-    RUNNING=$$(docker inspect --format="{{.Image}}" super-scraper 2>/dev/null) && \
-    LATEST=$$(docker image inspect --format="{{.Id}}" "$IMAGE" 2>/dev/null) && \
-    if [ "$$RUNNING" != "$$LATEST" ]; then \
-        echo "New image detected, restarting super-scraper and consumer..." && \
-        systemctl restart super-scraper.service && \
-        systemctl restart super-scraper-consumer.service; \
+    API_IMAGE="nikiconluxury/scaper-dev-api:latest" && \
+    CON_IMAGE="nikiconluxury/scaper-dev-consumer:latest" && \
+    docker pull "$$API_IMAGE" && docker pull "$$CON_IMAGE" && \
+    RUNNING_API=$$(docker inspect --format="{{.Image}}" super-scraper 2>/dev/null) && \
+    RUNNING_CON=$$(docker inspect --format="{{.Image}}" super-scraper-consumer 2>/dev/null) && \
+    LATEST_API=$$(docker image inspect --format="{{.Id}}" "$$API_IMAGE" 2>/dev/null) && \
+    LATEST_CON=$$(docker image inspect --format="{{.Id}}" "$$CON_IMAGE" 2>/dev/null) && \
+    if [ "$$RUNNING_API" != "$$LATEST_API" ] || [ "$$RUNNING_CON" != "$$LATEST_CON" ]; then \
+        echo "New image(s) detected, restarting via compose..." && \
+        systemctl restart super-scraper.service; \
     else \
-        echo "Already running latest image, no restart needed."; \
+        echo "Already running latest images, no restart needed."; \
     fi'
 
