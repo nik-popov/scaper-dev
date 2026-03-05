@@ -2,11 +2,31 @@ import aio_pika
 import json
 import logging
 import datetime
+import sys
 from typing import Dict, Any, Optional
 # from fastapi import BackgroundTasks # Not used in this class directly
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 import asyncio
 import aiormq.exceptions
+
+# Python 3.10 compatibility: asyncio.timeout was added in 3.11
+if sys.version_info >= (3, 11):
+    _timeout = asyncio.timeout
+else:
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def _timeout(delay):
+        """Compatibility shim for asyncio.timeout on Python <3.11."""
+        loop = asyncio.get_event_loop()
+        task = asyncio.current_task()
+        handle = loop.call_later(delay, task.cancel)
+        try:
+            yield
+        except asyncio.CancelledError:
+            raise asyncio.TimeoutError()
+        finally:
+            handle.cancel()
 def datetime_converter(o: Any) -> str:
     if isinstance(o, datetime.datetime) or isinstance(o, datetime.date):
         return o.isoformat()
@@ -82,7 +102,7 @@ class RabbitMQProducer:
             return
         try:
             logger.info("Attempting to connect to RabbitMQ...")
-            async with asyncio.timeout(self.connection_timeout):
+            async with _timeout(self.connection_timeout):
                 self.connection = await aio_pika.connect_robust(
                     self.amqp_url,
                     connection_attempts=3, # RobustConnection handles this
@@ -160,7 +180,7 @@ class RabbitMQProducer:
                 logger.debug(f"Declared dynamic/response queue: {actual_routing_key}")
             # No need to re-declare self.queue_name here, connect() and RobustConnection handle it.
 
-            async with asyncio.timeout(self.operation_timeout):
+            async with _timeout(self.operation_timeout):
                 message_body = json.dumps(message, default=datetime_converter)
                 await self.channel.default_exchange.publish(
                     aio_pika.Message(

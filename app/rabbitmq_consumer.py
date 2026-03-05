@@ -8,6 +8,25 @@ import uuid
 from rabbitmq_producer import RabbitMQProducer
 from sqlalchemy.sql import text
 from sqlalchemy.exc import SQLAlchemyError
+
+# Python 3.10 compatibility: asyncio.timeout was added in 3.11
+if sys.version_info >= (3, 11):
+    _timeout = asyncio.timeout
+else:
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def _timeout(delay):
+        """Compatibility shim for asyncio.timeout on Python <3.11."""
+        loop = asyncio.get_event_loop()
+        task = asyncio.current_task()
+        handle = loop.call_later(delay, task.cancel)
+        try:
+            yield
+        except asyncio.CancelledError:
+            raise asyncio.TimeoutError()
+        finally:
+            handle.cancel()
 from database_config import async_engine
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 import psutil
@@ -65,7 +84,7 @@ class RabbitMQConsumer:
         if self.connection and not self.connection.is_closed:
             return
         try:
-            async with asyncio.timeout(self.connection_timeout):
+            async with _timeout(self.connection_timeout):
                 self.connection = await aio_pika.connect_robust(
                     self.amqp_url,
                     connection_attempts=3,
@@ -401,7 +420,7 @@ class RabbitMQConsumer:
                     f"Received task for FileID: {file_id}, TaskType: {task_type}, "
                     f"CorrelationID: {message.correlation_id}"
                 )
-                async with asyncio.timeout(self.operation_timeout):
+                async with _timeout(self.operation_timeout):
                     if task_type == "select_deduplication":
                         async with async_engine.connect() as conn:
                             result = await self.execute_select(task, conn, logger)
@@ -455,7 +474,7 @@ class RabbitMQConsumer:
         task_type = task.get("task_type", "unknown")
         logger.info(f"Testing task for FileID: {file_id}, TaskType: {task_type}")
         try:
-            async with asyncio.timeout(self.operation_timeout):
+            async with _timeout(self.operation_timeout):
                 if task_type == "select_deduplication":
                     async with async_engine.connect() as conn:
                         success = await self.execute_select(task, conn, logger)

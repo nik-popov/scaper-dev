@@ -13,6 +13,23 @@ import urllib.parse
 import uuid
 from collections import defaultdict
 from contextlib import asynccontextmanager
+
+# Python 3.10 compatibility: asyncio.timeout was added in 3.11
+if sys.version_info >= (3, 11):
+    _timeout = asyncio.timeout
+else:
+    @asynccontextmanager
+    async def _timeout(delay):
+        """Compatibility shim for asyncio.timeout on Python <3.11."""
+        loop = asyncio.get_event_loop()
+        task = asyncio.current_task()
+        handle = loop.call_later(delay, task.cancel)
+        try:
+            yield
+        except asyncio.CancelledError:
+            raise asyncio.TimeoutError()
+        finally:
+            handle.cancel()
 from math import ceil
 from multiprocessing import cpu_count
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
@@ -131,7 +148,7 @@ async def lifespan(app_instance: FastAPI):
 
     try:
         default_logger.info("Initializing global RabbitMQ producer...")
-        async with asyncio.timeout(30):
+        async with _timeout(30):
             global_producer = await RabbitMQProducer.get_producer()
         if not global_producer or not global_producer.is_connected:
             default_logger.critical("CRITICAL: Failed to initialize or connect global RabbitMQ producer. Application may not function correctly.")
@@ -292,7 +309,7 @@ class SearchClient:
                 )
 
                 try:
-                    async with asyncio.timeout(45):
+                    async with _timeout(45):
                         async with current_session.post(
                             current_fetch_endpoint,
                             json={"url": search_url_google},
