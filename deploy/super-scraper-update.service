@@ -1,0 +1,22 @@
+[Unit]
+Description=Pull latest Super Scraper image and restart if changed
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+
+# Pull latest, compare digests, restart app + consumer only if image changed
+ExecStart=/bin/bash -c '\
+    IMAGE="ghcr.io/iconluxurygroup/scaper-dev:latest" && \
+    docker pull "$IMAGE" && \
+    RUNNING=$$(docker inspect --format="{{.Image}}" super-scraper 2>/dev/null) && \
+    LATEST=$$(docker image inspect --format="{{.Id}}" "$IMAGE" 2>/dev/null) && \
+    if [ "$$RUNNING" != "$$LATEST" ]; then \
+        echo "New image detected, restarting super-scraper and consumer..." && \
+        systemctl restart super-scraper-consumer.service && \
+        systemctl restart super-scraper.service; \
+    else \
+        echo "Already running latest image, no restart needed."; \
+    fi'
+

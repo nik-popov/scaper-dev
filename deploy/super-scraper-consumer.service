@@ -1,0 +1,32 @@
+[Unit]
+Description=Super Scraper RabbitMQ Consumer
+After=docker.service network-online.target super-scraper.service
+Requires=docker.service
+Wants=network-online.target
+BindsTo=super-scraper.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+TimeoutStartSec=120
+
+# Stop and remove any existing consumer container
+ExecStartPre=-/usr/bin/docker stop super-scraper-consumer
+ExecStartPre=-/usr/bin/docker rm super-scraper-consumer
+
+# Start the consumer container using the same image
+ExecStart=/usr/bin/docker run -d \
+    --name super-scraper-consumer \
+    --restart unless-stopped \
+    --env-file /etc/super-scraper/env \
+    --network host \
+    ghcr.io/iconluxurygroup/scaper-dev:latest \
+    python rabbitmq_consumer.py
+
+# Stop the consumer container
+ExecStop=/usr/bin/docker stop super-scraper-consumer
+ExecStopPost=-/usr/bin/docker rm super-scraper-consumer
+
+[Install]
+WantedBy=multi-user.target
+

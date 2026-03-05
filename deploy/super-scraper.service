@@ -1,0 +1,33 @@
+[Unit]
+Description=Super Scraper Container
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target super-scraper-consumer.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+TimeoutStartSec=300
+
+# Pull latest image before starting
+ExecStartPre=/usr/bin/docker pull ghcr.io/iconluxurygroup/scaper-dev:latest
+# Stop and remove any existing container (dash prefix = ignore errors if not running)
+ExecStartPre=-/usr/bin/docker stop super-scraper
+ExecStartPre=-/usr/bin/docker rm super-scraper
+
+# Start the container
+ExecStart=/usr/bin/docker run -d \
+    --name super-scraper \
+    -p 8080:8080 \
+    -p 8265:8265 \
+    --restart unless-stopped \
+    --env-file /etc/super-scraper/env \
+    ghcr.io/iconluxurygroup/scaper-dev:latest
+
+# Stop the container
+ExecStop=/usr/bin/docker stop super-scraper
+ExecStopPost=-/usr/bin/docker rm super-scraper
+
+[Install]
+WantedBy=multi-user.target
+

@@ -1,0 +1,12 @@
+[Unit]
+Description=Check for Super Scraper image updates every 5 minutes
+
+[Timer]
+# First check 1 minute after boot
+OnBootSec=1min
+# Then every 5 minutes
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target
+
