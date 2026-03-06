@@ -16,6 +16,7 @@ dependencies = [
     "aiofiles==24.1.0",
     "chardet==5.2.0",
     "setuptools>=69.0.0",
+    "requests==2.32.3",
 ]
 
 [project.optional-dependencies]
