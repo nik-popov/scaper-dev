@@ -14,7 +14,9 @@ set -euo pipefail
 # ============================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-IMAGE="nikiconluxury/scaper-dev:latest"
+CONFIG_DIR="/etc/super-scraper"
+SYSTEMD_DIR="/etc/systemd/system"
+COMPOSE_FILE="${CONFIG_DIR}/docker-compose.yml"
 
 # Check running as root
 if [ "$EUID" -ne 0 ]; then
@@ -28,46 +30,47 @@ if ! command -v docker &> /dev/null; then
     exit 1
 fi
 
+echo "==> Preparing ${CONFIG_DIR}..."
+mkdir -p "${CONFIG_DIR}"
+
+echo "==> Installing compose and systemd files..."
+install -m 0644 "${SCRIPT_DIR}/docker-compose.yml" "${COMPOSE_FILE}"
+install -m 0644 "${SCRIPT_DIR}/super-scraper.service" "${SYSTEMD_DIR}/super-scraper.service"
+install -m 0644 "${SCRIPT_DIR}/super-scraper-update.service" "${SYSTEMD_DIR}/super-scraper-update.service"
+install -m 0644 "${SCRIPT_DIR}/super-scraper-update.timer" "${SYSTEMD_DIR}/super-scraper-update.timer"
+
+# Remove stale standalone consumer unit from older deployments
+rm -f "${SYSTEMD_DIR}/super-scraper-consumer.service"
+
 # Create env file directory if it doesn't exist
-if [ ! -f /etc/super-scraper/env ]; then
-    echo "Creating environment file at /etc/super-scraper/env"
-    mkdir -p /etc/super-scraper
-    cat > /etc/super-scraper/env << 'EOF'
+if [ ! -f "${CONFIG_DIR}/env" ]; then
+    echo "Creating environment file at ${CONFIG_DIR}/env"
+    cat > "${CONFIG_DIR}/env" << 'EOF'
 # Add your environment variables here, one per line:
 # DB_PASSWORD=your_password
 # GOOGLE_API_KEY=your_key
 EOF
-    chmod 600 /etc/super-scraper/env
+    chmod 600 "${CONFIG_DIR}/env"
     echo ""
-    echo "WARNING: Edit /etc/super-scraper/env with your environment variables before starting."
+    echo "WARNING: Edit ${CONFIG_DIR}/env with your environment variables before starting."
     echo ""
 fi
-
-echo "==> Installing systemd units..."
-
-# Copy unit files to systemd directory
-cp "${SCRIPT_DIR}/super-scraper.service" /etc/systemd/system/
-cp "${SCRIPT_DIR}/super-scraper-consumer.service" /etc/systemd/system/
-cp "${SCRIPT_DIR}/super-scraper-update.service" /etc/systemd/system/
-cp "${SCRIPT_DIR}/super-scraper-update.timer" /etc/systemd/system/
 
 # Reload systemd to pick up new units
 systemctl daemon-reload
 
-echo "==> Pulling latest image..."
-docker pull "${IMAGE}"
-
-echo "==> Enabling and starting super-scraper service..."
+echo "==> Enabling services..."
 systemctl enable super-scraper.service
-systemctl start super-scraper.service
-
-echo "==> Enabling and starting RabbitMQ consumer service..."
-systemctl enable super-scraper-consumer.service
-systemctl start super-scraper-consumer.service
-
-echo "==> Enabling and starting update timer (checks every 5 min)..."
 systemctl enable super-scraper-update.timer
-systemctl start super-scraper-update.timer
+
+echo "==> Restarting Super Scraper compose stack..."
+systemctl restart super-scraper.service
+
+echo "==> Starting update timer (checks every 5 min)..."
+systemctl restart super-scraper-update.timer
+
+echo "==> Current compose status..."
+docker compose -f "${COMPOSE_FILE}" ps
 
 echo ""
 echo "============================================================"
@@ -78,11 +81,14 @@ echo " Useful commands:"
 echo "   systemctl status super-scraper          # Check service status"
 echo "   journalctl -u super-scraper -f          # Follow service logs"
 echo "   docker logs -f super-scraper            # Follow container logs"
+echo "   docker compose -f ${COMPOSE_FILE} ps    # Check compose status"
 echo "   systemctl list-timers                   # Check timer status"
 echo "   journalctl -u super-scraper-update      # Update check logs"
 echo "   systemctl restart super-scraper         # Manual restart"
 echo ""
 echo " To uninstall:"
 echo "   sudo ./uninstall.sh"
+echo " To reinstall after pulling new source:"
+echo "   sudo ./reinstall.sh"
 echo ""
 
