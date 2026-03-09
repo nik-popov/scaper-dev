@@ -1,4 +1,18 @@
 services:
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: super-scraper-rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: app_user
+      RABBITMQ_DEFAULT_PASS: app_password
+      RABBITMQ_DEFAULT_VHOST: app_vhost
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    restart: unless-stopped
+
   api:
     image: nikiconluxury/scaper-dev-api:latest
     container_name: super-scraper
@@ -7,6 +21,8 @@ services:
       - "8265:8265"
     env_file: ./env
     restart: unless-stopped
+    depends_on:
+      - rabbitmq
 
   consumer:
     image: nikiconluxury/scaper-dev-consumer:latest
@@ -15,4 +31,7 @@ services:
     env_file: ./env
     restart: unless-stopped
     depends_on:
-      - api
+      - rabbitmq
+
+volumes:
+  rabbitmq_data:
