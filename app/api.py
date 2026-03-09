@@ -233,7 +233,7 @@ class ProxyType(Enum):
     ROAMINGPROXY = "roamingproxy"
 
 class SearchClient:
-    def __init__(self, logger: logging.Logger, max_concurrency: int = 10, proxy_strategy: str = "round_robin"):
+    def __init__(self, logger: logging.Logger, max_concurrency: int = 3, proxy_strategy: str = "round_robin"):
         self.logger = logger
         self.semaphore = asyncio.Semaphore(max_concurrency)
         self.proxy_strategy = proxy_strategy
@@ -920,8 +920,8 @@ async def process_restart_batch(
             "last_entry_id_processed": str(entry_id or ""),
         }
 
-    BATCH_SIZE_PER_GATHER = max(100, num_workers * 10)
-    MAX_CONCURRENT_ENTRY_PROCESSING = max(100, num_workers * 5)
+    BATCH_SIZE_PER_GATHER = 20
+    MAX_CONCURRENT_ENTRY_PROCESSING = 5
     MAX_ENTRY_ATTEMPTS = 1
     configured_search_endpoint = ROAMINGPROXY_API_URL
 
