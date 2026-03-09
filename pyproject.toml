@@ -17,6 +17,7 @@ dependencies = [
     "chardet==5.2.0",
     "setuptools>=69.0.0",
     "requests==2.32.3",
+    "pycryptodome==3.23.0",
 ]
 
 [project.optional-dependencies]
@@ -54,7 +55,6 @@ api = [
     "spacy==3.7.5",
     "google-generativeai==0.8.5",
     "ImageHash==4.3.2",
-    "pycryptodome==3.23.0",
 ]
 ml = [
     "transformers==4.49.0",
